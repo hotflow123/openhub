@@ -46,7 +46,15 @@ export const models = sqliteTable(
 
     // fal.ai Schema 关联（参数结构）
     schemaEndpointId: text("schema_endpoint_id"),
-    schemaMatchSource: text("schema_match_source"), // bytedance | kling | wan | hailuo | manual | null
+    schemaMatchSource: text("schema_match_source"), // auto | inference | manual | null
+    // Schema 匹配证据：只把精确/人工确认标记为 confirmed，候选匹配必须复核
+    schemaMatchStatus: text("schema_match_status", {
+      enum: ["unmatched", "candidate", "confirmed", "partial"],
+    }),
+    schemaMatchConfidence: text("schema_match_confidence", {
+      enum: ["high", "medium", "low"],
+    }),
+    schemaMatchReason: text("schema_match_reason"),
     schemaSyncedAt: integer("schema_synced_at", { mode: "timestamp" }),
 
     // fal.ai Schema 完整数据快照（来自 model_schema_catalog）

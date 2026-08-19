@@ -9,7 +9,7 @@
  *   FAL_ENCYCLOPEDIA_FILE=./model/data/fal_model_encyclopedia.json pnpm --filter @openhub/server sync:fal
  */
 
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -91,9 +91,12 @@ function falCategoryToModality(
   return "unknown";
 }
 
-// 生成稳定的别名 ID（使用 nanoid，避免哈希碰撞）
+// 生成稳定的别名 ID。稳定 ID 让增量同步可审计，也避免每次同步制造新主键。
 function makeAliasId(endpointId: string, alias: string): string {
-  return `${endpointId.slice(0, 16)}__${alias.slice(0, 24)}__${nanoid(8)}`;
+  return createHash("sha256")
+    .update(`${endpointId}\u0000${alias}`)
+    .digest("hex")
+    .slice(0, 32);
 }
 
 // 归一化别名
@@ -160,6 +163,7 @@ export async function syncFalEncyclopedia(options: {
     const fetchedAt = new Date(data.meta.generated_at);
 
     const seenEndpoints = new Set<string>();
+    const seenAliasIds = new Set<string>();
     const schemaEntries: (typeof modelSchemaCatalog.$inferInsert)[] = [];
     const aliasEntries: (typeof modelSchemaAlias.$inferInsert)[] = [];
 
@@ -192,13 +196,17 @@ export async function syncFalEncyclopedia(options: {
       for (const { alias, aliasType } of aliases) {
         const normalized = normalizeAlias(alias);
         if (!normalized) continue;
+        const aliasId = makeAliasId(endpointId, normalized);
+        if (seenAliasIds.has(aliasId)) continue;
+        seenAliasIds.add(aliasId);
         aliasEntries.push({
-          id: makeAliasId(endpointId, normalized),
+          id: aliasId,
           endpointId,
           alias,
           normalized,
           aliasType,
           priority: 20,
+          source: "fal-ai",
         });
       }
     }
@@ -225,12 +233,38 @@ export async function syncFalEncyclopedia(options: {
       }
     }
 
-    // 重建别名表
-    await db.delete(modelSchemaAlias);
+    // 只增量维护 Fal 自己的别名，保留人工/供应商别名。
+    // 先 upsert 当前快照，再删除 Fal 来源中已经消失的 ID，避免中途失败把整张表清空。
     for (let i = 0; i < aliasEntries.length; i += 200) {
       await db
         .insert(modelSchemaAlias)
-        .values(aliasEntries.slice(i, i + 200) as SchemaAliasRow[]);
+        .values(aliasEntries.slice(i, i + 200) as SchemaAliasRow[])
+        .onConflictDoUpdate({
+          target: modelSchemaAlias.id,
+          set: {
+            endpointId: sql`excluded.endpoint_id`,
+            alias: sql`excluded.alias`,
+            normalized: sql`excluded.normalized`,
+            aliasType: sql`excluded.alias_type`,
+            priority: sql`excluded.priority`,
+            source: sql`excluded.source`,
+          },
+        });
+    }
+
+    const currentAliasIds = new Set(aliasEntries.map((entry) => entry.id));
+    const existingFalAliases = await db
+      .select({ id: modelSchemaAlias.id })
+      .from(modelSchemaAlias)
+      .where(eq(modelSchemaAlias.source, "fal-ai"));
+    const staleAliasIds = existingFalAliases
+      .map((entry) => entry.id)
+      .filter((id) => !currentAliasIds.has(id));
+    for (let i = 0; i < staleAliasIds.length; i += 200) {
+      const batch = staleAliasIds.slice(i, i + 200);
+      await db
+        .delete(modelSchemaAlias)
+        .where(sql`${modelSchemaAlias.id} IN (${sql.join(batch.map((id) => sql`${id}`), sql`, `)})`);
     }
 
     const completedAt = new Date();

@@ -68,6 +68,9 @@ wizard.get("/wizard/:modelId/step1", async (c) => {
       // fal schema 关联
       schemaEndpointId: models.schemaEndpointId,
       schemaMatchSource: models.schemaMatchSource,
+      schemaMatchStatus: models.schemaMatchStatus,
+      schemaMatchConfidence: models.schemaMatchConfidence,
+      schemaMatchReason: models.schemaMatchReason,
       falParametersSnapshot: models.falParametersSnapshot,
       falInputSchemaSnapshot: models.falInputSchemaSnapshot,
       videoDurationEnum: models.videoDurationEnum,
@@ -83,6 +86,7 @@ wizard.get("/wizard/:modelId/step1", async (c) => {
   if (!model) return c.json({ error: "Model not found" }, 404);
 
   const modelInputContract = readModelInputContract(model);
+  const hasConfirmedSchema = model.schemaMatchStatus === "confirmed";
 
   const [site] = await db
     .select({ name: sites.name, status: sites.status, adapterId: sites.adapterId })
@@ -246,12 +250,17 @@ wizard.get("/wizard/:modelId/step1", async (c) => {
       },
       // 当前关联的 fal schema 快照
       currentFalSchema: model.schemaEndpointId,
-      falParametersSnapshot: model.falParametersSnapshot,
+      schemaMatchStatus: model.schemaMatchStatus,
+      schemaMatchConfidence: model.schemaMatchConfidence,
+      schemaMatchReason: model.schemaMatchReason,
+      falParametersSnapshot: hasConfirmedSchema ? model.falParametersSnapshot : null,
       // 从已保存的 falInputSchemaSnapshot 解析参考资源上限
-      falInputSchemaCapabilities: extractInputSchemaCapabilities(
-        model.falInputSchemaSnapshot ?? null,
-        model.falParametersSnapshot ?? null,
-      ),
+      falInputSchemaCapabilities: hasConfirmedSchema
+        ? extractInputSchemaCapabilities(
+            model.falInputSchemaSnapshot ?? null,
+            model.falParametersSnapshot ?? null,
+          )
+        : extractInputSchemaCapabilities(null, null),
       modelInputContract: {
         fields: modelInputContract.fields,
         requiredFields: modelInputContract.requiredFields,
@@ -259,12 +268,12 @@ wizard.get("/wizard/:modelId/step1", async (c) => {
         totalReferenceFiles: modelInputContract.totalReferenceFiles,
         audioRequiresImageOrVideo: modelInputContract.audioRequiresImageOrVideo,
       },
-      videoDurationEnum: model.videoDurationEnum,
-      videoAspectRatios: model.videoAspectRatios,
-      videoResolutions: model.videoResolutions,
-      videoRequiredParams: model.videoRequiredParams,
-      videoOptionalParams: model.videoOptionalParams,
-      generateAudioSupported: model.generateAudioSupported,
+      videoDurationEnum: hasConfirmedSchema ? model.videoDurationEnum : null,
+      videoAspectRatios: hasConfirmedSchema ? model.videoAspectRatios : null,
+      videoResolutions: hasConfirmedSchema ? model.videoResolutions : null,
+      videoRequiredParams: hasConfirmedSchema ? model.videoRequiredParams : null,
+      videoOptionalParams: hasConfirmedSchema ? model.videoOptionalParams : null,
+      generateAudioSupported: hasConfirmedSchema ? model.generateAudioSupported : 0,
     },
   });
 });
@@ -397,6 +406,9 @@ wizard.post("/wizard/:modelId/apply-schema", async (c) => {
       capsOverridden: 0,
       schemaEndpointId: parsed.data.endpointId,
       schemaMatchSource: "manual",
+      schemaMatchStatus: "confirmed",
+      schemaMatchConfidence: "high",
+      schemaMatchReason: "wizard_apply_schema",
       schemaSyncedAt: now,
       falParametersSnapshot:
         params.length > 0 ? JSON.stringify(params) : null,

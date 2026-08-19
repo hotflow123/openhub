@@ -9,6 +9,7 @@ import {
 type JsonObject = Record<string, unknown>;
 
 export interface ModelContractSource {
+  schemaMatchStatus?: string | null;
   falParametersSnapshot: string | null;
   falInputSchemaSnapshot: string | null;
   videoRequiredParams: string | null;
@@ -112,12 +113,18 @@ function hasAudioDependency(parameters: unknown[], inputSchema: JsonObject | nul
 }
 
 export function readModelInputContract(model: ModelContractSource): ModelInputContract {
-  const rawParameters = parseJson(model.falParametersSnapshot);
+  // A candidate association is a lookup hint, not a proven endpoint contract.
+  // Only a schema explicitly applied through the wizard may validate or limit
+  // a caller's request based on Fal fields.
+  const schemaConfirmed = model.schemaMatchStatus === "confirmed";
+  const falParametersSnapshot = schemaConfirmed ? model.falParametersSnapshot : null;
+  const falInputSchemaSnapshot = schemaConfirmed ? model.falInputSchemaSnapshot : null;
+  const rawParameters = parseJson(falParametersSnapshot);
   const parameters = Array.isArray(rawParameters) ? rawParameters : [];
-  const inputSchema = asObject(parseJson(model.falInputSchemaSnapshot));
+  const inputSchema = asObject(parseJson(falInputSchemaSnapshot));
   const capabilities = extractInputSchemaCapabilities(
-    model.falInputSchemaSnapshot,
-    model.falParametersSnapshot,
+    falInputSchemaSnapshot,
+    falParametersSnapshot,
   );
   const properties = asObject(inputSchema?.properties);
 
@@ -134,7 +141,7 @@ export function readModelInputContract(model: ModelContractSource): ModelInputCo
       .map((parameter) => asObject(parameter)?.name)
       .filter((name): name is string => typeof name === "string"),
     ...asStringArray(inputSchema?.required),
-    ...asStringArray(parseJson(model.videoRequiredParams)),
+    ...(schemaConfirmed ? asStringArray(parseJson(model.videoRequiredParams)) : []),
   ]));
 
   const enums: Record<string, string[]> = {};
@@ -153,9 +160,15 @@ export function readModelInputContract(model: ModelContractSource): ModelInputCo
     fields,
     requiredFields,
     enums,
-    maxReferenceImages: capabilities.maxReferenceImages ?? model.maxReferenceImages,
-    maxReferenceVideos: capabilities.maxReferenceVideos ?? model.maxReferenceVideos,
-    maxReferenceAudios: capabilities.maxReferenceAudios ?? model.maxReferenceAudios,
+    maxReferenceImages: schemaConfirmed
+      ? capabilities.maxReferenceImages ?? model.maxReferenceImages
+      : null,
+    maxReferenceVideos: schemaConfirmed
+      ? capabilities.maxReferenceVideos ?? model.maxReferenceVideos
+      : null,
+    maxReferenceAudios: schemaConfirmed
+      ? capabilities.maxReferenceAudios ?? model.maxReferenceAudios
+      : null,
     totalReferenceFiles: findTotalReferenceFiles(parameters, inputSchema),
     audioRequiresImageOrVideo: hasAudioDependency(parameters, inputSchema),
   };

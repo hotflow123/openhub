@@ -20,6 +20,9 @@ interface Model {
   catalogSyncedAt: Date | null;
   schemaEndpointId: string | null;
   schemaMatchSource: string | null;
+  schemaMatchStatus: string | null;
+  schemaMatchConfidence: string | null;
+  schemaMatchReason: string | null;
   schemaSyncedAt: Date | null;
   // fal.ai 快照
   falParametersSnapshot: string | null;
@@ -95,6 +98,14 @@ function extractReferenceCaps(model: Model): {
   maxReferenceVideos: number | null;
   maxReferenceAudios: number | null;
 } {
+  if (model.schemaMatchStatus !== "confirmed") {
+    return {
+      maxReferenceImages: null,
+      maxReferenceVideos: null,
+      maxReferenceAudios: null,
+    };
+  }
+
   const result = {
     maxReferenceImages: model.maxReferenceImages ?? null,
     maxReferenceVideos: model.maxReferenceVideos ?? null,
@@ -157,14 +168,13 @@ function ModelLimits({ model }: { model: Model }) {
   const isVideo = caps.includes("video_generation") || model.modality === "video";
   const isImage = caps.includes("image_generation") || model.modality === "image";
   const isLLM = caps.includes("chat") || model.modality === "llm";
+  const schemaConfirmed = model.schemaMatchStatus === "confirmed";
 
   if (isVideo) {
-    const durationEnum = parseList(model.videoDurationEnum);
-    const aspectRatios = parseList(model.videoAspectRatios);
-    const resolutions = parseList(model.videoResolutions);
-    const requiredParams = parseList(model.videoRequiredParams);
-    const optionalParams = parseList(model.videoOptionalParams);
-    const maxSec = model.maxDurationSec;
+    const durationEnum = schemaConfirmed ? parseList(model.videoDurationEnum) : [];
+    const aspectRatios = schemaConfirmed ? parseList(model.videoAspectRatios) : [];
+    const resolutions = schemaConfirmed ? parseList(model.videoResolutions) : [];
+    const maxSec = schemaConfirmed ? model.maxDurationSec : null;
 
     const referenceCaps = extractReferenceCaps(model);
 
@@ -184,7 +194,7 @@ function ModelLimits({ model }: { model: Model }) {
         {aspectRatios.length > 0 && (
           <small className="cell-sub">比例 {aspectRatios.slice(0, 4).join(", ")}{aspectRatios.length > 4 ? "…" : ""}</small>
         )}
-        {model.generateAudioSupported === 1 && (
+        {schemaConfirmed && model.generateAudioSupported === 1 && (
           <small className="cell-sub" style={{ color: "#4ade80" }}>🎵 支持 audio</small>
         )}
         {referenceCaps.maxReferenceImages != null && (
@@ -196,7 +206,7 @@ function ModelLimits({ model }: { model: Model }) {
         {referenceCaps.maxReferenceAudios != null && (
            <small className="cell-sub">🎵 参考音频 {referenceCaps.maxReferenceAudios}个</small>
         )}
-        {model.requiresAsync === 1 && <small className="cell-sub">异步</small>}
+        {schemaConfirmed && model.requiresAsync === 1 && <small className="cell-sub">异步</small>}
       </>
     );
   }
@@ -231,8 +241,9 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
   const caps = parseList(model.endpointCaps);
   const referenceCaps = extractReferenceCaps(model);
   const isVideo = caps.includes("video_generation") || model.modality === "video";
+  const schemaConfirmed = model.schemaMatchStatus === "confirmed";
   const params: ParsedParameters[] = (() => {
-    if (!model.falParametersSnapshot) return [];
+    if (!schemaConfirmed || !model.falParametersSnapshot) return [];
     try {
       return JSON.parse(model.falParametersSnapshot);
     } catch {
@@ -240,11 +251,11 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
     }
   })();
 
-  const durationEnum = parseList(model.videoDurationEnum);
-  const aspectRatios = parseList(model.videoAspectRatios);
-  const resolutions = parseList(model.videoResolutions);
-  const requiredParams = parseList(model.videoRequiredParams);
-  const optionalParams = parseList(model.videoOptionalParams);
+  const durationEnum = schemaConfirmed ? parseList(model.videoDurationEnum) : [];
+  const aspectRatios = schemaConfirmed ? parseList(model.videoAspectRatios) : [];
+  const resolutions = schemaConfirmed ? parseList(model.videoResolutions) : [];
+  const requiredParams = schemaConfirmed ? parseList(model.videoRequiredParams) : [];
+  const optionalParams = schemaConfirmed ? parseList(model.videoOptionalParams) : [];
 
   return (
     <>
@@ -297,7 +308,13 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
                   {cap}
                 </span>
               ))}
-              {model.schemaEndpointId && (
+              {model.schemaMatchStatus === "confirmed" && (
+                <span className="badge badge-active" style={{ fontSize: 10 }}>Schema 映射已确认</span>
+              )}
+              {model.schemaMatchStatus === "candidate" && (
+                <span className="badge" style={{ fontSize: 10, background: "rgba(251,191,36,0.15)", color: "#fbbf24" }}>Schema 待复核</span>
+              )}
+              {!model.schemaMatchStatus && model.schemaEndpointId && (
                 <span className="badge badge-active" style={{ fontSize: 10 }}>已匹配 Schema</span>
               )}
               {model.capsOverridden === 1 && (
@@ -305,7 +322,7 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
                   人工确认
                 </span>
               )}
-              {model.falSource && (
+              {schemaConfirmed && model.falSource && (
                 <span className={`badge ${model.falSource === "queue" ? "badge-active" : "badge-neutral"}`} style={{ fontSize: 10 }}>
                   {model.falSource}
                 </span>
@@ -336,7 +353,7 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
         {/* Body */}
         <div style={{ flex: 1, overflowY: "auto", padding: "16px 24px" }}>
           {/* fal.ai pricing + description */}
-          {(model.falPricing || model.falDescription) && (
+          {schemaConfirmed && (model.falPricing || model.falDescription) && (
             <div style={{ marginBottom: 16 }}>
               {model.falPricing && (
                 <div
@@ -376,7 +393,7 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
                       ? durationEnum.length >= 10
                         ? `${durationEnum[0]} ~ ${durationEnum[durationEnum.length - 1]} (${durationEnum.length}个)`
                         : durationEnum.join(", ")
-                      : model.maxDurationSec ? `${model.maxDurationSec}s` : "—"}
+                      : schemaConfirmed && model.maxDurationSec ? `${model.maxDurationSec}s` : "—"}
                   </div>
                 </div>
                 <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 8, padding: 12 }}>
@@ -412,13 +429,17 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
                 <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 8, padding: 12 }}>
                   <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6 }}>支持生成 Audio</div>
                   <div style={{ fontSize: 12, color: model.generateAudioSupported === 1 ? "#4ade80" : "#64748b" }}>
-                    {model.generateAudioSupported === 1 ? "✅ 支持" : model.generateAudioSupported === 0 ? "❌ 不支持" : "—"}
+                    {schemaConfirmed
+                      ? model.generateAudioSupported === 1
+                        ? "✅ 支持"
+                        : "❌ 不支持"
+                      : "—"}
                   </div>
                 </div>
                 <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 8, padding: 12 }}>
                   <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6 }}>调用方式</div>
                   <div style={{ fontSize: 12, color: model.requiresAsync === 1 ? "#fb923c" : "#64748b" }}>
-                    {model.requiresAsync === 1 ? "异步 (queue)" : "同步"}
+                    {schemaConfirmed ? (model.requiresAsync === 1 ? "异步 (queue)" : "同步") : "—"}
                   </div>
                 </div>
                 <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 8, padding: 12 }}>
@@ -426,8 +447,13 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
                   <div style={{ fontSize: 11, color: "#60a5fa" }}>
                     {model.schemaEndpointId ?? "—"}
                     <div style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>
-                      {model.schemaMatchSource ?? ""}
+                      {model.schemaMatchSource ?? "—"}
+                      {model.schemaMatchStatus ? ` · ${model.schemaMatchStatus}` : ""}
+                      {model.schemaMatchConfidence ? ` · ${model.schemaMatchConfidence}` : ""}
                     </div>
+                    {model.schemaMatchReason && (
+                      <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}>{model.schemaMatchReason}</div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -550,6 +576,9 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
                 ) : (
                   <span style={{ color: "#64748b" }}>未匹配</span>
                 )}
+                <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 4 }}>
+                  映射确认不等于上游站点已实测兼容。
+                </div>
               </div>
             </div>
             <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 8, padding: 12 }}>
@@ -559,8 +588,12 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
                   <>
                     <code style={{ fontSize: 11 }}>{model.schemaEndpointId}</code>
                     <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>
-                      {model.schemaMatchSource ?? "—"}
+                      {model.schemaMatchSource ?? "—"} · {model.schemaMatchStatus ?? "unmatched"}
+                      {model.schemaMatchConfidence ? ` · ${model.schemaMatchConfidence}` : ""}
                     </div>
+                    {model.schemaMatchReason && (
+                      <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}>{model.schemaMatchReason}</div>
+                    )}
                   </>
                 ) : (
                   <span style={{ color: "#64748b" }}>未匹配</span>
@@ -720,7 +753,12 @@ export default function ModelsPage() {
                     {m.schemaEndpointId ? (
                       <>
                         <code style={{ fontSize: 11 }}>{m.schemaEndpointId}</code>
-                        <small className="cell-sub">{m.schemaMatchSource ?? ""}</small>
+                        <small className="cell-sub">
+                          {m.schemaMatchSource ?? ""}
+                          {m.schemaMatchStatus ? ` · ${m.schemaMatchStatus}` : ""}
+                          {m.schemaMatchConfidence ? ` · ${m.schemaMatchConfidence}` : ""}
+                        </small>
+                        {m.schemaMatchReason && <small className="cell-sub">{m.schemaMatchReason}</small>}
                       </>
                     ) : (
                       <span className="muted">未匹配</span>
@@ -822,8 +860,6 @@ function EditModel({
     supportsVision: !!model.supportsVision,
     supportsStream: !!model.supportsStream,
     requiresAsync: !!model.requiresAsync,
-    falPricing: model.falPricing ?? "",
-    falDescription: model.falDescription ?? "",
   });
 
   // ── Fal Schema 选择（独立于表单保存）──────────────────────────────────
@@ -873,16 +909,6 @@ function EditModel({
     mutationFn: () =>
       api.patch(`/admin/models/${model.id}`, {
         schemaEndpointId: null,
-        schemaMatchSource: null,
-        falParametersSnapshot: null,
-        videoDurationEnum: null,
-        videoAspectRatios: null,
-        videoResolutions: null,
-        videoRequiredParams: null,
-        videoOptionalParams: null,
-        generateAudioSupported: 0,
-        falPricing: null,
-        falDescription: null,
       }),
     onSuccess: () => {
       onSaved();
@@ -927,6 +953,7 @@ function EditModel({
   const isLLM = caps.includes("chat") || model.modality === "llm" || form.modality === "llm";
   const isVideo = caps.includes("video_generation") || form.modality === "video";
   const isImage = caps.includes("image_generation") || form.modality === "image";
+  const schemaConfirmed = model.schemaMatchStatus === "confirmed";
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -978,23 +1005,29 @@ function EditModel({
             <div
               style={{
                 padding: "10px 12px",
-                background: "#ecfdf5",
-                border: "1px solid #86efac",
+                background: schemaConfirmed ? "#ecfdf5" : "#fef3c7",
+                border: schemaConfirmed ? "1px solid #86efac" : "1px solid #fde68a",
                 borderRadius: 5,
                 fontSize: 12,
-                color: "#065f46",
+                color: schemaConfirmed ? "#065f46" : "#92400e",
                 marginBottom: 10,
               }}
             >
               <div>
-                ✅ 当前关联: <code style={{ background: "white", padding: "1px 4px" }}>{model.schemaEndpointId}</code>
+                {schemaConfirmed ? "✅ 已确认关联: " : "⚠ 候选关联（未应用参数）: "}
+                <code style={{ background: "white", padding: "1px 4px" }}>{model.schemaEndpointId}</code>
                 {model.schemaMatchSource && (
                   <span style={{ marginLeft: 8, color: "#64748b" }}>
                     (来源: {model.schemaMatchSource})
                   </span>
                 )}
               </div>
-              {parseList(model.videoDurationEnum).length > 0 && (
+              {!schemaConfirmed && (
+                <div style={{ marginTop: 6 }}>
+                  请在此选择并应用 Schema，才会写入参数、参考资源上限和字段名。
+                </div>
+              )}
+              {schemaConfirmed && parseList(model.videoDurationEnum).length > 0 && (
                 <div style={{ marginTop: 6 }}>
                   ⏱ 时长: {parseList(model.videoDurationEnum).join(", ")}s
                   {model.maxDurationSec != null && (
@@ -1002,17 +1035,17 @@ function EditModel({
                   )}
                 </div>
               )}
-              {parseList(model.videoAspectRatios).length > 0 && (
+              {schemaConfirmed && parseList(model.videoAspectRatios).length > 0 && (
                 <div style={{ marginTop: 3 }}>
                   📏 比例: {parseList(model.videoAspectRatios).join(", ")}
                 </div>
               )}
-              {parseList(model.videoResolutions).length > 0 && (
+              {schemaConfirmed && parseList(model.videoResolutions).length > 0 && (
                 <div style={{ marginTop: 3 }}>
                   📐 分辨率: {parseList(model.videoResolutions).join(", ")}
                 </div>
               )}
-              {model.generateAudioSupported === 1 && (
+              {schemaConfirmed && model.generateAudioSupported === 1 && (
                 <div style={{ marginTop: 3 }}>🔊 生成音频: 开启</div>
               )}
             </div>
@@ -1227,28 +1260,6 @@ function EditModel({
                 placeholder="512x512, 1024x1024"
               />
               <small className="field-hint">用逗号分隔多个尺寸</small>
-            </Field>
-          </div>
-        )}
-
-        {/* fal.ai 快照字段 */}
-        {(form.falPricing || form.falDescription || model.falParametersSnapshot) && (
-          <div className="form-grid">
-            <Field label="fal.ai 定价">
-              <input
-                className="input"
-                value={form.falPricing}
-                onChange={(e) => setForm({ ...form, falPricing: e.target.value })}
-                placeholder="$0.05/秒..."
-              />
-            </Field>
-            <Field label="fal.ai 描述">
-              <input
-                className="input"
-                value={form.falDescription}
-                onChange={(e) => setForm({ ...form, falDescription: e.target.value })}
-                placeholder="fal.ai 描述..."
-              />
             </Field>
           </div>
         )}

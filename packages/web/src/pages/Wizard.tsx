@@ -13,6 +13,7 @@ interface FalSchemaSummary {
   endpointId: string;
   title: string;
   modality: string;
+  source: string;
   falCategory: string;
   falSource: string | null;
   pricing: string | null;
@@ -44,6 +45,9 @@ interface Step1Data {
   adapterOptions: Array<{ id: string; capabilities: string[] }>;
   suggestedModality: Modality;
   currentFalSchema: string | null;
+  schemaMatchStatus: string | null;
+  schemaMatchConfidence: string | null;
+  schemaMatchReason: string | null;
   falParametersSnapshot: string | null;
   falInputSchemaCapabilities: {
     maxReferenceImages: number | null;
@@ -523,6 +527,7 @@ export default function WizardPage() {
                     <span style={{ color: "#64748b" }}>{s.modality}</span>
                     {" · "}
                     <span style={{ color: "#64748b" }}>{s.falCategory}</span>
+                    <span style={{ marginLeft: 6, color: "#64748b" }}>[来源: {s.source}]</span>
                     {s.falSource && (
                       <span style={{ marginLeft: 6, color: s.falSource === "queue" ? "#f59e0b" : "#64748b" }}>
                         [{s.falSource}]
@@ -588,7 +593,7 @@ export default function WizardPage() {
           <div className="modal-actions" style={{ justifyContent: "space-between" }}>
             <div style={{ display: "flex", gap: 8 }}>
               <button className="btn" onClick={handleSkip}>跳过（无 Schema）</button>
-              {modelData.currentFalSchema && (
+              {modelData.currentFalSchema && modelData.schemaMatchStatus === "confirmed" && (
                 <button className="btn" onClick={handleApplyCurrent}>
                   使用当前配置
                 </button>
@@ -615,8 +620,17 @@ export default function WizardPage() {
           {modelData.currentFalSchema && (
             <div style={{ marginBottom: 16, padding: "10px 14px", background: "#f0f9ff", border: "1px solid #93c5fd", borderRadius: 6, fontSize: 12 }}>
               <span style={{ color: "#1d4ed8" }}>
-                ✅ 已关联 fal Schema: <code>{modelData.currentFalSchema}</code>
+                {modelData.schemaMatchStatus === "confirmed" ? "✅ 已确认 Fal 映射: " : "⚠️ 候选 Fal Schema（未应用参数）: "}
+                <code>{modelData.currentFalSchema}</code>
               </span>
+              <div style={{ marginTop: 4, color: "#64748b" }}>
+                匹配证据：{modelData.schemaMatchStatus ?? "未记录"}
+                {modelData.schemaMatchConfidence ? ` · 置信度 ${modelData.schemaMatchConfidence}` : ""}
+                {modelData.schemaMatchReason ? ` · ${modelData.schemaMatchReason}` : ""}
+              </div>
+              <div style={{ marginTop: 4, color: "#94a3b8" }}>
+                Fal 映射仅说明参数来源；上游站点是否兼容仍需实际调用验收。
+              </div>
             </div>
           )}
 

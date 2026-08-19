@@ -25,7 +25,11 @@ const REQUIRED_COLUMNS: Record<string, string[]> = {
     "max_reference_images",
     "max_reference_videos",
     "max_reference_audios",
+    "schema_match_status",
+    "schema_match_confidence",
+    "schema_match_reason",
   ],
+  model_schema_alias: ["source"],
   variants: [
     "max_reference_images",
     "max_reference_videos",

@@ -1,7 +1,8 @@
-import { eq, like } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "../db/index";
-import { models, modelSchemaAlias } from "../db/schema/index";
+import { models } from "../db/schema/index";
 import { inferModelCapability } from "./infer";
+import { matchSchema } from "./catalog/schema-matcher";
 import { extractInputSchemaCapabilities } from "../lib/fal-input-schema";
 import type { InferredCapability, ParameterSnapshot } from "./infer";
 
@@ -18,30 +19,6 @@ interface DiscoveredModel {
  */
 export function deriveModelId(siteId: string, remoteId: string): string {
   return `${siteId}__${remoteId}`;
-}
-
-/**
- * 从模型名称查找 fal.ai schema endpoint_id
- * 使用 model_schema_alias 表进行匹配
- * 
- * 注意：只做简单的别名表查询，不做硬编码的变体匹配
- * 变体匹配由用户在界面上手动完成
- */
-async function findFalSchemaEndpointId(modelName: string): Promise<string | null> {
-  const normalized = modelName.toLowerCase().replace(/[_\-\/]/g, " ").trim();
-  
-  // 在 alias 表中查找匹配
-  const [aliasMatch] = await db
-    .select({ endpointId: modelSchemaAlias.endpointId })
-    .from(modelSchemaAlias)
-    .where(like(modelSchemaAlias.normalized, `%${normalized}%`))
-    .limit(1);
-  
-  if (aliasMatch) {
-    return aliasMatch.endpointId;
-  }
-  
-  return null;
 }
 
 /**
@@ -90,11 +67,20 @@ export async function discoverModels(
     // 1. 尝试从 fal.ai schema 关联参数
     let schemaEndpointId: string | null = null;
     let schemaMatchSource: string | null = null;
+    let schemaMatchStatus: "unmatched" | "candidate" | "confirmed" | "partial" = "unmatched";
+    let schemaMatchConfidence: "high" | "medium" | "low" | null = null;
+    let schemaMatchReason: string | null = "no_exact_alias";
     try {
-      schemaEndpointId = await findFalSchemaEndpointId(m.id);
-      if (schemaEndpointId) {
-        schemaMatchSource = "auto";
-        console.log(`[discover] Schema linked ${m.id} -> ${schemaEndpointId}`);
+      const schemaMatch = await matchSchema(m.id);
+      if (schemaMatch) {
+        schemaEndpointId = schemaMatch.endpointId;
+        schemaMatchSource = schemaMatch.aliasType;
+        schemaMatchStatus = schemaMatch.status;
+        schemaMatchConfidence = schemaMatch.confidence;
+        schemaMatchReason = schemaMatch.reason;
+        console.log(
+          `[discover] Schema ${schemaMatch.status}: ${m.id} -> ${schemaEndpointId} (${schemaMatch.reason})`,
+        );
       }
     } catch (err) {
       console.warn(`[discover] Schema lookup failed for ${m.id}:`, err);
@@ -130,12 +116,22 @@ export async function discoverModels(
     let supportsReasoning = 0;
 
     try {
-      const inferred = await inferModelCapability(m.id, { schemaEndpointId });
+      // A candidate only suggests an endpoint to an administrator. It must not
+      // populate real parameter limits until the association is confirmed.
+      const inferred = await inferModelCapability(m.id, {
+        schemaEndpointId: schemaMatchStatus === "confirmed" ? schemaEndpointId : null,
+      });
       modality = inferred.modality;
 
       // === 持久化 fal.ai 完整元数据（之前完全丢失）===
       if (inferred.falEndpointId) {
-        schemaEndpointId = schemaEndpointId ?? inferred.falEndpointId;
+        if (!schemaEndpointId) {
+          schemaEndpointId = inferred.falEndpointId;
+          schemaMatchSource = "inference";
+          schemaMatchStatus = "candidate";
+          schemaMatchConfidence = inferred.confidence >= 0.9 ? "medium" : "low";
+          schemaMatchReason = "inference_endpoint_needs_review";
+        }
       }
       if (inferred.falSource) {
         falSource = inferred.falSource;
@@ -271,7 +267,10 @@ export async function discoverModels(
       // fal.ai 完整快照
       schemaEndpointId,
       schemaMatchSource,
-      schemaSyncedAt: schemaEndpointId ? new Date() : undefined,
+      schemaMatchStatus,
+      schemaMatchConfidence,
+      schemaMatchReason,
+      schemaSyncedAt: schemaMatchStatus === "confirmed" ? new Date() : undefined,
       falParametersSnapshot,
       falInputSchemaSnapshot,
       falPricing,

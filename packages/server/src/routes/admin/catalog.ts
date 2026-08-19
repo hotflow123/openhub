@@ -1,4 +1,4 @@
-import { count, desc, eq, inArray, isNotNull, isNull, like, sql } from "drizzle-orm";
+import { count, desc, eq, inArray, isNotNull, isNull, like, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { generateAliases, performSync } from "@openhub/catalog/sync";
 import { db } from "../../db/index";
@@ -103,6 +103,18 @@ catalog.get("/catalog/stats", async (c) => {
     .select({ value: count() })
     .from(models)
     .where(isNotNull(models.schemaEndpointId));
+  const [confirmedTotal] = await db
+    .select({ value: count() })
+    .from(models)
+    .where(eq(models.schemaMatchStatus, "confirmed"));
+  const [candidateTotal] = await db
+    .select({ value: count() })
+    .from(models)
+    .where(eq(models.schemaMatchStatus, "candidate"));
+  const [unmatchedSchemaTotal] = await db
+    .select({ value: count() })
+    .from(models)
+    .where(eq(models.schemaMatchStatus, "unmatched"));
 
   return c.json({
     data: {
@@ -113,6 +125,9 @@ catalog.get("/catalog/stats", async (c) => {
         total: schemaTotal?.value ?? 0,
         aliases: schemaAliasTotal?.value ?? 0,
         matched: schemaMatchedTotal?.value ?? 0,
+        confirmed: confirmedTotal?.value ?? 0,
+        candidate: candidateTotal?.value ?? 0,
+        unmatched: unmatchedSchemaTotal?.value ?? 0,
       },
       models: {
         total: totalModels,
@@ -147,6 +162,18 @@ catalog.get("/catalog/schema-stats", async (c) => {
     .select({ value: count() })
     .from(models)
     .where(isNotNull(models.schemaEndpointId));
+  const [confirmedTotal] = await db
+    .select({ value: count() })
+    .from(models)
+    .where(eq(models.schemaMatchStatus, "confirmed"));
+  const [candidateTotal] = await db
+    .select({ value: count() })
+    .from(models)
+    .where(eq(models.schemaMatchStatus, "candidate"));
+  const [unmatchedSchemaTotal] = await db
+    .select({ value: count() })
+    .from(models)
+    .where(eq(models.schemaMatchStatus, "unmatched"));
   const [latestRun] = await db
     .select()
     .from(schemaCatalogSyncRuns)
@@ -157,6 +184,9 @@ catalog.get("/catalog/schema-stats", async (c) => {
       schemas: schemaTotal?.value ?? 0,
       aliases: aliasTotal?.value ?? 0,
       matchedModels: matchedTotal?.value ?? 0,
+      confirmedModels: confirmedTotal?.value ?? 0,
+      candidateModels: candidateTotal?.value ?? 0,
+      unmatchedModels: unmatchedSchemaTotal?.value ?? 0,
       lastRun: latestRun ?? null,
     },
   });
@@ -174,10 +204,15 @@ catalog.get("/catalog/schema", async (c) => {
   try {
     let rows;
     if (q) {
+      const pattern = `%${q}%`;
       rows = await db
         .select()
         .from(modelSchemaCatalog)
-        .where(like(modelSchemaCatalog.title, `%${q}%`))
+        .where(or(
+          like(modelSchemaCatalog.title, pattern),
+          like(modelSchemaCatalog.endpointId, pattern),
+          like(modelSchemaCatalog.falModelId, pattern),
+        ))
         .limit(limit)
         .offset(offset);
     } else if (modality) {
@@ -278,6 +313,7 @@ catalog.get("/catalog/schema", async (c) => {
       endpointId: row.endpointId,
       title: row.title,
       modality: row.modality,
+      source: row.source,
       falCategory: row.falCategory,
       falSource: row.falSource,
       pricing: row.pricing,
@@ -333,6 +369,7 @@ catalog.get("/catalog/schema/:endpointId", async (c) => {
       endpointId: row.endpointId,
       title: row.title,
       modality: row.modality,
+      source: row.source,
       falCategory: row.falCategory,
       falSource: row.falSource,
       description: row.description,

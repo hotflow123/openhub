@@ -44,6 +44,36 @@ export interface SchemaMatchResult {
   falCategory: string | null;
   /** fal source（queue/realtime） */
   falSource: string | null;
+  /** 匹配证据状态 */
+  status: "candidate" | "confirmed";
+  confidence: "high" | "medium" | "low";
+  reason: string;
+  aliasSource: string;
+}
+
+/**
+ * Fal snapshots describe a specific endpoint, not merely a similarly named
+ * upstream model. Keep candidates visible for review, but never leave their
+ * old snapshot-derived limits active.
+ */
+function clearUnconfirmedSchemaCapabilities() {
+  return {
+    schemaSyncedAt: null,
+    falParametersSnapshot: null,
+    falInputSchemaSnapshot: null,
+    falPricing: null,
+    falDescription: null,
+    falSource: null,
+    videoDurationEnum: null,
+    videoAspectRatios: null,
+    videoResolutions: null,
+    videoRequiredParams: null,
+    videoOptionalParams: null,
+    generateAudioSupported: 0,
+    maxReferenceImages: null,
+    maxReferenceVideos: null,
+    maxReferenceAudios: null,
+  };
 }
 
 /** 归一化：lowercase + 去掉 _/- 分隔符 + 压缩空格 */
@@ -64,10 +94,11 @@ export async function matchSchema(rawName: string): Promise<SchemaMatchResult | 
       endpointId: modelSchemaAlias.endpointId,
       aliasType: modelSchemaAlias.aliasType,
       alias: modelSchemaAlias.alias,
+      source: modelSchemaAlias.source,
     })
     .from(modelSchemaAlias)
     .where(eq(modelSchemaAlias.normalized, normalized))
-    .orderBy(modelSchemaAlias.priority)
+    .orderBy(modelSchemaAlias.priority, modelSchemaAlias.id)
     .limit(1);
 
   if (!aliasRow) return null;
@@ -98,6 +129,11 @@ export async function matchSchema(rawName: string): Promise<SchemaMatchResult | 
     }
   }
 
+  const manuallyCurated = aliasRow.source !== "fal-ai" || aliasRow.aliasType === "manual";
+  const exactEndpoint =
+    aliasRow.source === "fal-ai" &&
+    normalize(aliasRow.alias) === normalize(schemaRow.endpointId);
+
   return {
     endpointId: schemaRow.endpointId,
     aliasType: aliasRow.aliasType,
@@ -107,6 +143,17 @@ export async function matchSchema(rawName: string): Promise<SchemaMatchResult | 
     parameters,
     falCategory: schemaRow.falCategory,
     falSource: schemaRow.falSource,
+    // An alias is useful matching evidence, but only the explicit wizard
+    // selection has a model-level audit record. Do not auto-confirm a model
+    // just because its name resembles a Fal endpoint.
+    status: "candidate",
+    confidence: manuallyCurated || exactEndpoint ? "high" : "medium",
+    reason: manuallyCurated
+      ? "curated_alias_needs_review"
+      : exactEndpoint
+        ? "exact_endpoint_alias_needs_review"
+        : "exact_generated_alias_needs_review",
+    aliasSource: aliasRow.source,
   };
 }
 
@@ -118,7 +165,16 @@ export async function matchSchemasForSite(
   siteId: string,
 ): Promise<{ matched: number; total: number }> {
   const siteModels = await db
-    .select({ id: models.id, rawName: models.rawName, modality: models.modality })
+    .select({
+      id: models.id,
+      rawName: models.rawName,
+      modality: models.modality,
+      schemaEndpointId: models.schemaEndpointId,
+      schemaMatchSource: models.schemaMatchSource,
+      schemaMatchStatus: models.schemaMatchStatus,
+      schemaMatchConfidence: models.schemaMatchConfidence,
+      schemaMatchReason: models.schemaMatchReason,
+    })
     .from(models)
     .where(eq(models.siteId, siteId));
 
@@ -128,19 +184,83 @@ export async function matchSchemasForSite(
     // 只对非 LLM 模型匹配 Schema（LLM 用 model_catalog）
     if (model.modality === "llm" || model.modality === "embedding") continue;
 
+    // Only an auditable wizard selection is an approved mapping. Historical
+    // manual writes are candidates because their correctness is unknown.
+    if (
+      model.schemaMatchSource === "manual" &&
+      model.schemaEndpointId &&
+      model.schemaMatchStatus === "confirmed"
+    ) {
+      await db
+        .update(models)
+        .set({
+          schemaMatchStatus: "confirmed",
+          schemaMatchConfidence: "high",
+          schemaMatchReason: model.schemaMatchReason ?? "wizard_apply_schema",
+          updatedAt: new Date(),
+        })
+        .where(eq(models.id, model.id));
+      matched++;
+      continue;
+    }
+
+    if (model.schemaMatchSource === "manual" && model.schemaEndpointId) {
+      await db
+        .update(models)
+        .set({
+          ...clearUnconfirmedSchemaCapabilities(),
+          schemaMatchStatus: "candidate",
+          schemaMatchConfidence: "low",
+          schemaMatchReason: model.schemaMatchReason ?? "legacy_manual_unverified",
+          updatedAt: new Date(),
+        })
+        .where(eq(models.id, model.id));
+      matched++;
+      continue;
+    }
+
     const result = await matchSchema(model.rawName);
 
     if (result) {
       await db
         .update(models)
         .set({
+          ...(result.status === "confirmed" ? {} : clearUnconfirmedSchemaCapabilities()),
           schemaEndpointId: result.endpointId,
           schemaMatchSource: result.aliasType,
-          schemaSyncedAt: new Date(),
+          schemaMatchStatus: result.status,
+          schemaMatchConfidence: result.confidence,
+          schemaMatchReason: result.reason,
+          schemaSyncedAt: result.status === "confirmed" ? new Date() : null,
           updatedAt: new Date(),
         })
         .where(eq(models.id, model.id));
       matched++;
+    } else if (model.schemaMatchStatus === "candidate" && model.schemaEndpointId) {
+      // A candidate is deliberately retained for an administrator to review.
+      // It has no Fal snapshot or limits until manual confirmation.
+      await db
+        .update(models)
+        .set({
+          ...clearUnconfirmedSchemaCapabilities(),
+          schemaMatchConfidence: "low",
+          schemaMatchReason: "candidate_endpoint_needs_review",
+          updatedAt: new Date(),
+        })
+        .where(eq(models.id, model.id));
+    } else {
+      await db
+        .update(models)
+        .set({
+          ...clearUnconfirmedSchemaCapabilities(),
+          schemaEndpointId: null,
+          schemaMatchSource: null,
+          schemaMatchStatus: "unmatched",
+          schemaMatchConfidence: null,
+          schemaMatchReason: "no_exact_alias",
+          updatedAt: new Date(),
+        })
+        .where(eq(models.id, model.id));
     }
   }
 

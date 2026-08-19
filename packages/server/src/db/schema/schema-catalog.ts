@@ -105,6 +105,8 @@ export const modelSchemaAlias = sqliteTable(
       ],
     }).notNull(),
     priority: integer("priority").notNull().default(50),
+    // 允许 Fal 同步与未来的人工/供应商别名并存，避免同步时误删非 Fal 数据。
+    source: text("source").notNull().default("fal-ai"),
     createdAt: integer("created_at")
       .notNull()
       .default(sql`(unixepoch())`),

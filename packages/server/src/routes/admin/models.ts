@@ -4,6 +4,7 @@ import { eq, desc } from "drizzle-orm";
 import { db } from "../../db/index";
 import { sites, models, type ModelRow } from "../../db/schema/index";
 import { withAdminAuth } from "./_with-auth";
+import { writeAudit } from "../../lib/audit";
 
 const modelsRoute = new Hono();
 withAdminAuth(modelsRoute);
@@ -29,6 +30,9 @@ modelsRoute.get("/models", async (c) => {
       catalogSyncedAt: models.catalogSyncedAt,
       schemaEndpointId: models.schemaEndpointId,
       schemaMatchSource: models.schemaMatchSource,
+      schemaMatchStatus: models.schemaMatchStatus,
+      schemaMatchConfidence: models.schemaMatchConfidence,
+      schemaMatchReason: models.schemaMatchReason,
       schemaSyncedAt: models.schemaSyncedAt,
       // fal.ai 完整快照
       falParametersSnapshot: models.falParametersSnapshot,
@@ -89,6 +93,9 @@ modelsRoute.get("/models", async (c) => {
           catalogSyncedAt: models.catalogSyncedAt,
           schemaEndpointId: models.schemaEndpointId,
           schemaMatchSource: models.schemaMatchSource,
+          schemaMatchStatus: models.schemaMatchStatus,
+          schemaMatchConfidence: models.schemaMatchConfidence,
+          schemaMatchReason: models.schemaMatchReason,
           schemaSyncedAt: models.schemaSyncedAt,
           falParametersSnapshot: models.falParametersSnapshot,
           falInputSchemaSnapshot: models.falInputSchemaSnapshot,
@@ -154,22 +161,9 @@ const PatchModelSchema = z.object({
   maxDurationSec: z.number().int().nullable().optional(),
   supportsStream: z.number().int().min(0).max(1).optional(),
   requiresAsync: z.number().int().min(0).max(1).optional(),
-  // fal 快照字段（JSON 字符串）
-  falPricing: z.string().nullable().optional(),
-  falDescription: z.string().nullable().optional(),
-  falParametersSnapshot: z.string().nullable().optional(),
-  falInputSchemaSnapshot: z.string().nullable().optional(),
-  schemaEndpointId: z.string().nullable().optional(),
-  schemaMatchSource: z.string().nullable().optional(),
-  videoDurationEnum: z.string().nullable().optional(),
-  videoAspectRatios: z.string().nullable().optional(),
-  videoResolutions: z.string().nullable().optional(),
-  videoRequiredParams: z.string().nullable().optional(),
-  videoOptionalParams: z.string().nullable().optional(),
-  generateAudioSupported: z.number().int().min(0).max(1).optional(),
-  maxReferenceImages: z.number().int().nullable().optional(),
-  maxReferenceVideos: z.number().int().nullable().optional(),
-  maxReferenceAudios: z.number().int().nullable().optional(),
+  // Schema associations are confirmed only by the audited wizard action.
+  // The generic editor may clear an association, but cannot create one.
+  schemaEndpointId: z.null().optional(),
   status: z.enum(["active", "degraded", "offline", "unknown"]).optional(),
   statusReason: z.string().nullable().optional(),
 });
@@ -177,6 +171,36 @@ const PatchModelSchema = z.object({
 modelsRoute.patch("/models/:id", async (c) => {
   const id = c.req.param("id");
   const body = await c.req.json().catch(() => ({}));
+  const schemaManagedFields = [
+    "falPricing",
+    "falDescription",
+    "falParametersSnapshot",
+    "falInputSchemaSnapshot",
+    "schemaMatchSource",
+    "schemaMatchStatus",
+    "schemaMatchConfidence",
+    "schemaMatchReason",
+    "videoDurationEnum",
+    "videoAspectRatios",
+    "videoResolutions",
+    "videoRequiredParams",
+    "videoOptionalParams",
+    "generateAudioSupported",
+    "maxReferenceImages",
+    "maxReferenceVideos",
+    "maxReferenceAudios",
+  ];
+  if (
+    body &&
+    typeof body === "object" &&
+    !Array.isArray(body) &&
+    schemaManagedFields.some((field) => Object.prototype.hasOwnProperty.call(body, field))
+  ) {
+    return c.json(
+      { error: { message: "Fal schema fields are managed by the wizard", code: "schema_evidence_read_only" } },
+      400,
+    );
+  }
   const parsed = PatchModelSchema.safeParse(body);
   if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
 
@@ -244,29 +268,28 @@ modelsRoute.patch("/models/:id", async (c) => {
   if (parsed.data.status !== undefined) update.status = parsed.data.status;
   if (parsed.data.statusReason !== undefined) update.statusReason = parsed.data.statusReason;
 
-  // fal.ai 快照（可手动覆盖）
-  if (parsed.data.falPricing !== undefined) update.falPricing = parsed.data.falPricing;
-  if (parsed.data.falDescription !== undefined) update.falDescription = parsed.data.falDescription;
-  if (parsed.data.falParametersSnapshot !== undefined) update.falParametersSnapshot = parsed.data.falParametersSnapshot;
-  if (parsed.data.falInputSchemaSnapshot !== undefined) update.falInputSchemaSnapshot = parsed.data.falInputSchemaSnapshot;
   if (parsed.data.schemaEndpointId !== undefined) {
-    update.schemaEndpointId = parsed.data.schemaEndpointId;
-    if (parsed.data.schemaEndpointId === null) {
-      update.schemaSyncedAt = null;
-      update.schemaMatchSource = null;
-    }
+    update.schemaEndpointId = null;
+    update.schemaSyncedAt = null;
+    update.schemaMatchSource = null;
+    update.schemaMatchStatus = "unmatched";
+    update.schemaMatchConfidence = null;
+    update.schemaMatchReason = "cleared_by_admin";
+    update.falParametersSnapshot = null;
+    update.falInputSchemaSnapshot = null;
+    update.falPricing = null;
+    update.falDescription = null;
+    update.falSource = null;
+    update.videoDurationEnum = null;
+    update.videoAspectRatios = null;
+    update.videoResolutions = null;
+    update.videoRequiredParams = null;
+    update.videoOptionalParams = null;
+    update.generateAudioSupported = 0;
+    update.maxReferenceImages = null;
+    update.maxReferenceVideos = null;
+    update.maxReferenceAudios = null;
   }
-  if (parsed.data.schemaMatchSource !== undefined) update.schemaMatchSource = parsed.data.schemaMatchSource;
-  if (parsed.data.videoDurationEnum !== undefined) update.videoDurationEnum = parsed.data.videoDurationEnum;
-  if (parsed.data.videoAspectRatios !== undefined) update.videoAspectRatios = parsed.data.videoAspectRatios;
-  if (parsed.data.videoResolutions !== undefined) update.videoResolutions = parsed.data.videoResolutions;
-  if (parsed.data.videoRequiredParams !== undefined) update.videoRequiredParams = parsed.data.videoRequiredParams;
-  if (parsed.data.videoOptionalParams !== undefined) update.videoOptionalParams = parsed.data.videoOptionalParams;
-  if (parsed.data.generateAudioSupported !== undefined) update.generateAudioSupported = parsed.data.generateAudioSupported;
-  if (parsed.data.maxReferenceImages !== undefined) update.maxReferenceImages = parsed.data.maxReferenceImages;
-  if (parsed.data.maxReferenceVideos !== undefined) update.maxReferenceVideos = parsed.data.maxReferenceVideos;
-  if (parsed.data.maxReferenceAudios !== undefined) update.maxReferenceAudios = parsed.data.maxReferenceAudios;
-
   if (capsTouched) update.capsOverridden = 1;
 
   update.updatedAt = new Date();
@@ -277,6 +300,14 @@ modelsRoute.patch("/models/:id", async (c) => {
     .where(eq(models.id, id))
     .returning();
   if (!row) return c.json({ error: "Not found" }, 404);
+  if (parsed.data.schemaEndpointId === null) {
+    await writeAudit({
+      actor: "admin",
+      action: "model.schema.clear",
+      resourceType: "model",
+      resourceId: id,
+    });
+  }
   return c.json({ data: row });
 });
 

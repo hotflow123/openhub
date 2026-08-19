@@ -29,6 +29,13 @@
       "when": 1787062592284,
       "tag": "0003_dry_sphinx",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1787126891979,
+      "tag": "0004_schema-match-evidence",
+      "breakpoints": true
     }
   ]
 }

@@ -9,6 +9,7 @@
     "db:push": "drizzle-kit push --force",
     "db:migrate": "drizzle-kit migrate",
     "db:migrate:param-limits": "node tools/migrate-param-limits.cjs",
+    "db:migrate:schema-evidence": "node tools/migrate-schema-match-evidence.cjs",
     "db:generate": "drizzle-kit generate",
     "db:studio": "drizzle-kit studio",
     "catalog:coverage": "tsx --env-file=.env tools/analyze-catalog-coverage.ts",

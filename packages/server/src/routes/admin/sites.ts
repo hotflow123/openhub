@@ -8,6 +8,7 @@ import { encrypt, getMasterKey } from "../../lib/crypto";
 import { validateUrl } from "../../lib/ssrf";
 import { discoverModels } from "../../engine/discover";
 import { matchModelsForSite } from "../../engine/catalog/match-after-discover";
+import { matchSchemasForSite } from "../../engine/catalog/schema-matcher";
 import { writeAudit } from "../../lib/audit";
 import { withAdminAuth } from "./_with-auth";
 
@@ -94,6 +95,7 @@ sitesRoute.post("/sites", async (c) => {
     try {
       await discoverModels(id, baseUrl, apiKey);
       await matchModelsForSite(id);
+      await matchSchemasForSite(id);
     } catch (err) {
       console.error(`[sites] auto-discover failed for ${id}:`, err);
     }
@@ -153,7 +155,8 @@ sitesRoute.post("/sites/:id/discover", async (c) => {
   try {
     const result = await discoverModels(id, site.baseUrl, apiKey);
     const match = await matchModelsForSite(id);
-    return c.json({ data: { ...result, ...match } });
+    const schemaMatch = await matchSchemasForSite(id);
+    return c.json({ data: { ...result, ...match, schemaMatched: schemaMatch.matched, schemaTotal: schemaMatch.total } });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await db

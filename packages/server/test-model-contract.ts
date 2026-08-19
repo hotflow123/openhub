@@ -8,6 +8,7 @@ import {
 } from "./src/lib/model-contract";
 
 const model = {
+  schemaMatchStatus: "confirmed",
   falParametersSnapshot: JSON.stringify([
     { name: "prompt", required: true },
     { name: "duration", enum: ["5", "10"] },
@@ -92,6 +93,24 @@ test("rejects a variant limit above the model contract", () => {
   );
   assert.equal(
     validateVariantLimits({ maxReferenceImages: 9, maxReferenceVideos: 3, maxReferenceAudios: 3, maxDurationSec: null }, model),
+    null,
+  );
+});
+
+test("does not treat a candidate Schema as a provider contract", () => {
+  const candidate = { ...model, schemaMatchStatus: "candidate" };
+  const contract = readModelInputContract(candidate);
+
+  assert.deepEqual(contract.fields, []);
+  assert.equal(contract.maxReferenceImages, null);
+  assert.equal(contract.maxReferenceVideos, null);
+  assert.equal(contract.maxReferenceAudios, null);
+  assert.equal(
+    validateModelRequest(
+      { model: "variant", image_urls: Array(10).fill("i") },
+      candidate,
+      {},
+    ),
     null,
   );
 });
