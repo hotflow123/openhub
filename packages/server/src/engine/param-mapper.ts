@@ -65,6 +65,71 @@ export interface ParamMapperOutput {
   dropped: string[];
 }
 
+export interface StoredVariantParamPolicy {
+  paramOverrides?: string | null;
+  paramBlocked?: string | null;
+  fieldMapping?: string | null;
+}
+
+function parseStoredObject(raw: string | null | undefined): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseStoredList(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((value): value is string => typeof value === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Apply a stored variant policy at a synchronous route boundary.
+ * Route-specific fields and the model's confirmed Schema fields are supplied
+ * by the caller; mapped provider names are always retained in the allow-list.
+ */
+export function mapStoredVariantParams(
+  callerBody: Record<string, unknown>,
+  variant: StoredVariantParamPolicy,
+  knownFields: Iterable<string>,
+): ParamMapperOutput {
+  const paramOverrides = parseStoredObject(variant.paramOverrides);
+  const paramBlocked = parseStoredList(variant.paramBlocked);
+  const fieldMapping = parseStoredObject(variant.fieldMapping) as Record<string, string>;
+  const mappedOverrideFields = Object.keys(paramOverrides).map((field) => fieldMapping[field] ?? field);
+  const providerFields = Object.values(fieldMapping);
+
+  return mapParams({
+    callerBody,
+    variant: {
+      param_overrides: paramOverrides,
+      param_blocked: paramBlocked,
+      field_mapping: fieldMapping,
+    },
+    adapter: {
+      // The union keeps confirmed Fal fields and explicit provider mappings
+      // intact without turning every arbitrary caller field into pass-through.
+      knownFields: Array.from(new Set([
+        ...knownFields,
+        ...providerFields,
+        ...mappedOverrideFields,
+      ])),
+    },
+  });
+}
+
 /**
  * 已知 OpenAI 标准字段（用于 Step 8 兜底白名单）。
  *
@@ -114,6 +179,17 @@ export const CHAT_KNOWN_FIELDS: ReadonlySet<string> = new Set([
   "duration",
   "aspect_ratio",
   "reference_image_url",
+  "reference_image_urls",
+  "reference_video_url",
+  "reference_video_urls",
+  "reference_audio_url",
+  "reference_audio_urls",
+  "image_url",
+  "image_urls",
+  "video_url",
+  "video_urls",
+  "audio_url",
+  "audio_urls",
   "callback_url",
   "callback_secret",
   "idempotency_key",

@@ -17,9 +17,13 @@ import type {
   AudioSpeechRequest,
   AudioTranscriptionRequest,
   AudioTranscriptionResponse,
+  EmbeddingRequest,
+  EmbeddingResponse,
   VideoSubmitRequest,
   VideoQueryResult,
 } from "../engine/adapter";
+import { CHAT_KNOWN_FIELDS, mapStoredVariantParams } from "../engine/param-mapper";
+import { readModelInputContract } from "../lib/model-contract";
 
 export class RouterError extends Error {
   constructor(
@@ -136,12 +140,40 @@ export function buildForwardContext(
   };
 }
 
+type RequestKind = "chat" | "embedding" | "image" | "audio";
+
+const REQUEST_FIELDS: Record<RequestKind, string[]> = {
+  chat: Array.from(CHAT_KNOWN_FIELDS),
+  embedding: ["model", "input", "encoding_format", "user"],
+  image: [
+    "model", "prompt", "n", "size", "quality", "style", "response_format", "user",
+    "image", "mask",
+  ],
+  audio: [
+    "model", "input", "voice", "response_format", "speed", "file", "language", "prompt", "temperature",
+  ],
+};
+
+function applyVariantParams<T extends Record<string, unknown>>(
+  route: ResolvedRoute,
+  body: T,
+  kind: RequestKind,
+): T {
+  const contract = readModelInputContract(route.model);
+  return mapStoredVariantParams(
+    body,
+    route.variant,
+    [...REQUEST_FIELDS[kind], ...contract.fields],
+  ).body as T;
+}
+
 export async function forwardChat(
   variantId: string,
   req: ChatRequest,
 ): Promise<ChatResponse> {
   const route = await resolveRoute(variantId);
   const ctx = buildForwardContext(route.variant, route.site, route.apiKey);
+  req = applyVariantParams(route, req as unknown as Record<string, unknown>, "chat") as ChatRequest;
   // 把"v1/chat 请求里的 model (= variant name)"替换成上游站点的真实模型 id
   req.model = route.model.rawName;
   try {
@@ -158,6 +190,7 @@ export async function forwardChatStream(
 ): Promise<Response> {
   const route = await resolveRoute(variantId);
   const ctx = buildForwardContext(route.variant, route.site, route.apiKey);
+  req = applyVariantParams(route, req as unknown as Record<string, unknown>, "chat") as ChatRequest;
   req.model = route.model.rawName;
   try {
     return await route.adapter.forwardChatStream(req, ctx);
@@ -176,6 +209,7 @@ export async function forwardImageGeneration(
     throw new RouterError("Adapter does not support image.generation", 400, "capability_unsupported");
   }
   const ctx = buildForwardContext(route.variant, route.site, route.apiKey);
+  req = applyVariantParams(route, req as unknown as Record<string, unknown>, "image") as unknown as ImageGenerationRequest;
   req.model = route.model.rawName;
   try {
     return await route.adapter.forwardImageGeneration(req, ctx);
@@ -194,6 +228,7 @@ export async function forwardImageEdit(
     throw new RouterError("Adapter does not support image.edit", 400, "capability_unsupported");
   }
   const ctx = buildForwardContext(route.variant, route.site, route.apiKey);
+  req = applyVariantParams(route, req as unknown as Record<string, unknown>, "image") as unknown as ImageEditRequest;
   req.model = route.model.rawName;
   try {
     return await route.adapter.forwardImageEdit(req, ctx);
@@ -216,6 +251,7 @@ export async function forwardImageVariation(
     );
   }
   const ctx = buildForwardContext(route.variant, route.site, route.apiKey);
+  req = applyVariantParams(route, req as unknown as Record<string, unknown>, "image") as unknown as ImageVariationRequest;
   req.model = route.model.rawName;
   try {
     return await route.adapter.forwardImageVariation(req, ctx);
@@ -238,6 +274,7 @@ export async function forwardAudioSpeech(
     );
   }
   const ctx = buildForwardContext(route.variant, route.site, route.apiKey);
+  req = applyVariantParams(route, req as unknown as Record<string, unknown>, "audio") as unknown as AudioSpeechRequest;
   req.model = route.model.rawName;
   try {
     return await route.adapter.forwardAudioSpeech(req, ctx);
@@ -260,9 +297,29 @@ export async function forwardAudioTranscription(
     );
   }
   const ctx = buildForwardContext(route.variant, route.site, route.apiKey);
+  req = applyVariantParams(route, req as unknown as Record<string, unknown>, "audio") as unknown as AudioTranscriptionRequest;
   req.model = route.model.rawName;
   try {
     return await route.adapter.forwardAudioTranscription(req, ctx);
+  } catch (err) {
+    await markSiteError(route.site.id, err);
+    throw err;
+  }
+}
+
+export async function forwardEmbedding(
+  variantId: string,
+  req: EmbeddingRequest,
+): Promise<EmbeddingResponse> {
+  const route = await resolveRoute(variantId);
+  if (!route.adapter.forwardEmbedding) {
+    throw new RouterError("Adapter does not support embeddings", 400, "capability_unsupported");
+  }
+  const ctx = buildForwardContext(route.variant, route.site, route.apiKey);
+  req = applyVariantParams(route, req as unknown as Record<string, unknown>, "embedding") as unknown as EmbeddingRequest;
+  req.model = route.model.rawName;
+  try {
+    return await route.adapter.forwardEmbedding(req, ctx);
   } catch (err) {
     await markSiteError(route.site.id, err);
     throw err;

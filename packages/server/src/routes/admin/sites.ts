@@ -156,6 +156,16 @@ sitesRoute.post("/sites/:id/discover", async (c) => {
     const result = await discoverModels(id, site.baseUrl, apiKey);
     const match = await matchModelsForSite(id);
     const schemaMatch = await matchSchemasForSite(id);
+    await db
+      .update(sites)
+      .set({
+        status: site.status === "disabled" ? "disabled" : "active",
+        errorCount: 0,
+        lastError: null,
+        lastCheck: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(sites.id, id));
     return c.json({ data: { ...result, ...match, schemaMatched: schemaMatch.matched, schemaTotal: schemaMatch.total } });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -177,6 +187,18 @@ sitesRoute.post("/sites/:id/health", async (c) => {
   const adapter = getAdapter(site.adapterId);
   if (!adapter) return c.json({ error: "Adapter not found" }, 500);
   const ok = await adapter.healthCheck({ targetUrl: site.baseUrl, apiKey });
+  if (site.status !== "disabled") {
+    await db
+      .update(sites)
+      .set({
+        status: ok ? "active" : "error",
+        errorCount: ok ? 0 : site.errorCount + 1,
+        lastError: ok ? null : "health_check_failed",
+        lastCheck: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(sites.id, id));
+  }
   return c.json({ data: { id, healthy: ok } });
 });
 

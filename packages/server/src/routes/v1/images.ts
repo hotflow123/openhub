@@ -48,16 +48,7 @@ images.post("/v1/images/generations", async (c) => {
   if (!access.ok) return errorResponse(access.status, (access.body as any).error.message, "variant_not_allowed");
 
   try {
-    const result = await forwardImageGeneration(body.model, {
-      model: body.model,
-      prompt: body.prompt,
-      n: body.n,
-      size: body.size,
-      quality: body.quality,
-      style: body.style,
-      response_format: body.response_format,
-      user: body.user,
-    });
+    const result = await forwardImageGeneration(body.model, body);
     return c.json(result);
   } catch (err) {
     return handleRouterError(err);
@@ -88,6 +79,7 @@ images.post("/v1/images/edits", async (c) => {
   if (!access.ok) return errorResponse(access.status, (access.body as any).error.message, "variant_not_allowed");
 
   const req: ImageEditRequest = {
+    ...(form as Record<string, unknown>),
     model,
     prompt,
     image: imageField as Blob,
@@ -128,6 +120,7 @@ images.post("/v1/images/variations", async (c) => {
   if (!access.ok) return errorResponse(access.status, (access.body as any).error.message, "variant_not_allowed");
 
   const req: ImageVariationRequest = {
+    ...(form as Record<string, unknown>),
     model,
     image: imageField as Blob,
     n: form["n"] ? Number(form["n"]) : undefined,

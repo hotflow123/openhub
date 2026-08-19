@@ -57,13 +57,7 @@ audio.post("/v1/audio/speech", async (c) => {
   if (!access.ok) return errorResponse(access.status, (access.body as any).error.message, "variant_not_allowed");
 
   try {
-    const buf = await forwardAudioSpeech(body.model, {
-      model: body.model,
-      input: body.input,
-      voice: body.voice,
-      response_format: body.response_format,
-      speed: body.speed,
-    });
+    const buf = await forwardAudioSpeech(body.model, body);
     const format = body.response_format ?? "mp3";
     return new Response(buf, {
       status: 200,
@@ -94,6 +88,7 @@ audio.post("/v1/audio/transcriptions", async (c) => {
   if (!access.ok) return errorResponse(access.status, (access.body as any).error.message, "variant_not_allowed");
 
   const req: AudioTranscriptionRequest = {
+    ...(form as Record<string, unknown>),
     model,
     file: fileField as Blob,
     language: form["language"] ? String(form["language"]) : undefined,

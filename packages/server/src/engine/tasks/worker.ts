@@ -30,7 +30,7 @@ import {
 } from "./service";
 import { createHmac } from "node:crypto";
 import { logger } from "../../lib/log";
-import { mapParams } from "../param-mapper";
+import { mapStoredVariantParams } from "../param-mapper";
 
 let pollTimer: NodeJS.Timeout | null = null;
 let callbackTimer: NodeJS.Timeout | null = null;
@@ -136,31 +136,23 @@ export async function submitPendingTasks(): Promise<number> {
       const requestFields = schemaFields.length > 0
         ? schemaFields
         : Object.keys(meta).filter((field) => field !== "variant_id");
-      const submitInput = mapParams({
-        callerBody: { ...meta },
-        variant: {
-          param_overrides: variant.paramOverrides ? JSON.parse(variant.paramOverrides) : undefined,
-          param_blocked: variant.paramBlocked ? JSON.parse(variant.paramBlocked) : undefined,
-          field_mapping: variant.fieldMapping ? JSON.parse(variant.fieldMapping) : undefined,
-          adapter_config: variant.adapterConfig ? JSON.parse(variant.adapterConfig) : undefined,
-        },
-        adapter: {
-          // Fal Schema is the provider-specific allow-list for this model.
-          knownFields: Array.from(new Set([
-            ...requestFields,
-            "model",
-            "prompt",
-            "duration",
-            "aspect_ratio",
-            "resolution",
-            "size",
-            "seed",
-            "stream",
-            "callback_url",
-            "idempotency_key",
-          ])),
-        },
-      }).body;
+      const submitInput = mapStoredVariantParams(
+        { ...meta },
+        variant,
+        [
+          ...requestFields,
+          "model",
+          "prompt",
+          "duration",
+          "aspect_ratio",
+          "resolution",
+          "size",
+          "seed",
+          "stream",
+          "callback_url",
+          "idempotency_key",
+        ],
+      ).body;
       const result = await adapter.submitVideoTask(submitInput, {
         targetUrl: site.baseUrl,
         apiKey,

@@ -132,16 +132,7 @@ export const openaiAdapter: Adapter = {
         "Content-Type": "application/json",
         Authorization: `Bearer ${ctx.apiKey}`,
       },
-      body: JSON.stringify({
-        model: req.model,
-        prompt: req.prompt,
-        n: req.n,
-        size: req.size,
-        quality: req.quality,
-        style: req.style,
-        response_format: req.response_format,
-        user: req.user,
-      }),
+      body: JSON.stringify(req),
     });
     if (!response.ok) {
       throw await toAdapterError(response, "image.generation");
@@ -154,14 +145,7 @@ export const openaiAdapter: Adapter = {
     ctx: ForwardContext,
   ): Promise<ImageResponse> {
     const form = new FormData();
-    form.append("model", req.model);
-    form.append("prompt", req.prompt);
-    if (req.n != null) form.append("n", String(req.n));
-    if (req.size) form.append("size", req.size);
-    if (req.response_format) form.append("response_format", req.response_format);
-    if (req.user) form.append("user", req.user);
-    appendImageField(form, "image", req.image);
-    if (req.mask) appendImageField(form, "mask", req.mask);
+    appendMultipartFields(form, req as unknown as Record<string, unknown>);
 
     const url = `${baseUrl(ctx.targetUrl)}/v1/images/edits`;
     const response = await fetch(url, {
@@ -180,12 +164,7 @@ export const openaiAdapter: Adapter = {
     ctx: ForwardContext,
   ): Promise<ImageResponse> {
     const form = new FormData();
-    form.append("model", req.model);
-    if (req.n != null) form.append("n", String(req.n));
-    if (req.size) form.append("size", req.size);
-    if (req.response_format) form.append("response_format", req.response_format);
-    if (req.user) form.append("user", req.user);
-    appendImageField(form, "image", req.image);
+    appendMultipartFields(form, req as unknown as Record<string, unknown>);
 
     const url = `${baseUrl(ctx.targetUrl)}/v1/images/variations`;
     const response = await fetch(url, {
@@ -212,13 +191,7 @@ export const openaiAdapter: Adapter = {
         "Content-Type": "application/json",
         Authorization: `Bearer ${ctx.apiKey}`,
       },
-      body: JSON.stringify({
-        model: req.model,
-        input: req.input,
-        voice: req.voice,
-        response_format: req.response_format,
-        speed: req.speed,
-      }),
+      body: JSON.stringify(req),
     });
     if (!response.ok) {
       throw await toAdapterError(response, "audio.speech");
@@ -231,12 +204,7 @@ export const openaiAdapter: Adapter = {
     ctx: ForwardContext,
   ): Promise<AudioTranscriptionResponse> {
     const form = new FormData();
-    form.append("model", req.model);
-    appendAudioField(form, "file", req.file);
-    if (req.language) form.append("language", req.language);
-    if (req.prompt) form.append("prompt", req.prompt);
-    if (req.response_format) form.append("response_format", req.response_format);
-    if (req.temperature != null) form.append("temperature", String(req.temperature));
+    appendMultipartFields(form, req as unknown as Record<string, unknown>);
 
     const url = `${baseUrl(ctx.targetUrl)}/v1/audio/transcriptions`;
     const response = await fetch(url, {
@@ -370,6 +338,31 @@ function appendAudioField(form: FormData, key: string, value: Blob | string): vo
     }
   } else {
     form.append(key, value, "audio");
+  }
+}
+
+function appendMultipartFields(form: FormData, body: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(body)) {
+    if (value == null) continue;
+    if (key === "image" || key === "mask") {
+      appendImageField(form, key, value as Blob | string);
+      continue;
+    }
+    if (key === "file") {
+      appendAudioField(form, key, value as Blob | string);
+      continue;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (item != null) form.append(key, String(item));
+      }
+      continue;
+    }
+    if (value instanceof Blob) {
+      form.append(key, value, key);
+      continue;
+    }
+    form.append(key, String(value));
   }
 }
 

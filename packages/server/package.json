@@ -16,6 +16,7 @@
     "catalog:init": "tsx --env-file=.env scripts/init.ts",
     "init": "tsx --env-file=.env scripts/init.ts",
     "sync:fal": "tsx src/scripts/sync-fal-encyclopedia.ts",
+    "test": "tsx --test test-model-contract.ts test-param-mapper.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
