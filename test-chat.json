@@ -1,0 +1,5 @@
+{
+  "model": "gpt4o-mini",
+  "messages": [{"role": "user", "content": "hi"}],
+  "max_tokens": 5
+}

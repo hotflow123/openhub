@@ -1,0 +1,17 @@
+services:
+  openhub:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      OPENHUB_MASTER_KEY: ${OPENHUB_MASTER_KEY:-please-change-this-32-char-key}
+      OPENHUB_ADMIN_USERNAME: ${OPENHUB_ADMIN_USERNAME:-admin}
+      OPENHUB_ADMIN_PASSWORD: ${OPENHUB_ADMIN_PASSWORD:-admin123}
+      OPENHUB_DB_URL: /data/openhub.db
+      MODELS_DEV_URL: ${MODELS_DEV_URL:-https://models.dev/api/v0/models.json}
+    volumes:
+      - openhub-data:/data
+    restart: unless-stopped
+
+volumes:
+  openhub-data:

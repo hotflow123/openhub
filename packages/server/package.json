@@ -1,0 +1,36 @@
+{
+  "name": "@openhub/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file=.env src/index.ts",
+    "start": "tsx --env-file=.env src/index.ts",
+    "db:push": "drizzle-kit push --force",
+    "db:migrate": "drizzle-kit migrate",
+    "db:migrate:param-limits": "node tools/migrate-param-limits.cjs",
+    "db:generate": "drizzle-kit generate",
+    "db:studio": "drizzle-kit studio",
+    "catalog:coverage": "tsx --env-file=.env tools/analyze-catalog-coverage.ts",
+    "catalog:init": "tsx --env-file=.env scripts/init.ts",
+    "init": "tsx --env-file=.env scripts/init.ts",
+    "sync:fal": "tsx src/scripts/sync-fal-encyclopedia.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hono": "^4.5.0",
+    "@hono/node-server": "^1.13.0",
+    "drizzle-orm": "^0.36.0",
+    "better-sqlite3": "^11.2.0",
+    "zod": "^3.23.0",
+    "nanoid": "^5.0.7",
+    "@openhub/catalog": "workspace:*"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.28.0",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0",
+    "tsx": "^4.19.0"
+  }
+}

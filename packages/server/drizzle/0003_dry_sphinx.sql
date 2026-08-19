@@ -1,0 +1,1 @@
+ALTER TABLE `variants` ADD `param_limits` text;

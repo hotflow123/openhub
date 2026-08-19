@@ -1,0 +1,1 @@
+{"name":"mock-param-mapped","description":"test param mapping","modelId":"syxSkBojD6lKPitGN9WVY__gpt-4o-mini","paramMapping":{"param_overrides":{"temperature":0.1,"user":"mapped-by-variant"},"param_blocked":["top_p"],"field_mapping":{},"adapter":{"fixedParams":{},"param_defaults":{}}}}
