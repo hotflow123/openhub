@@ -10,7 +10,7 @@ async function main() {
       id: s.id,
       name: s.name,
       baseUrl: s.baseUrl,
-      hasApiKey: !!s.apiKey,
+      hasApiKey: !!s.apiKeyEnc && !!s.apiKeyIv,
       createdAt: s.createdAt,
     });
   }

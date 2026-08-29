@@ -10,9 +10,6 @@
  *   import { inferFromVariant } from "../../engine/infer";
  *   const result = await inferFromVariant("e2e-wizard-...", [{role:"user",content:"..."}]);
  */
-import { db } from "../db/index";
-import { variants, models, sites } from "../db/schema/index";
-import { eq } from "drizzle-orm";
 import { decrypt, getMasterKey } from "../lib/crypto";
 import { mapParams } from "./param-mapper";
 import type { Variant } from "../db/schema/index";
@@ -76,6 +73,9 @@ export async function inferFromVariant(
   messages: InferMessage[],
   options: InferOptions = {},
 ): Promise<InferResult> {
+  const { db } = await import("../db/index.js");
+  const { variants, models, sites } = await import("../db/schema/index.js");
+  const { eq } = await import("drizzle-orm");
   const [variant] = await db
     .select()
     .from(variants)

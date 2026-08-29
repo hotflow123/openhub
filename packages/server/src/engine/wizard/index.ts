@@ -19,7 +19,7 @@ import { inferModalityFromCatalog } from "../catalog/modality";
 import { matcherDb } from "../catalog/db-adapter";
 
 // 复用 matcher 的 MatchResult 类型
-export type MatchSource = "exact" | "normalized" | "alias" | "fuzzy" | "keyword" | "admin" | "probe" | "none" | null;
+export type MatchSource = "exact" | "normalized" | "alias" | "structured" | "fuzzy" | "keyword" | "admin" | "probe" | "none" | null;
 export type MatchConfidence = "high" | "medium" | "low" | null;
 
 export interface WizardStep1Result {
