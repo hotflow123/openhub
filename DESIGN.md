@@ -687,25 +687,23 @@ interface Adapter {
 
 ### 视频适配器（异步）
 
-视频是最复杂的模态，因为几乎每个站点都有完全不同的异步接口：
+视频公共层只统一任务生命周期；供应商路径、字段和结果位置必须由已验证的适配器负责：
 
 ```typescript
 // 视频适配器的核心职责是将异步流程统一化
 
 interface VideoAdapter extends Adapter {
-  modality: 'video';
-
   // 1. 提交任务，返回站点 task_id
-  submitTask(params: AdapterRequest): Promise<{ siteTaskId: string }>;
+  submitTask(params: VideoSubmitRequest): Promise<{ siteTaskId: string }>;
 
   // 2. 查询任务状态
-  queryTask(siteTaskId: string, params: AdapterRequest): Promise<TaskStatus>;
+  queryTask(siteTaskId: string): Promise<TaskStatus>;
 
   // 3. 将站点任务状态映射为 OpenHub 统一状态
-  mapStatus(siteStatus: string): 'pending' | 'processing' | 'completed' | 'failed';
+  mapStatus(siteStatus: unknown): 'pending' | 'processing' | 'completed' | 'failed' | 'timeout';
 
   // 4. 将站点结果转换为统一格式
-  transformResult(siteResult: unknown): VideoResult;
+  transformResult(siteResult: unknown): VideoResult | undefined;
 }
 
 // 视频结果统一格式
@@ -729,7 +727,9 @@ interface VideoResult {
 | Wan | `POST /v1/generations` | `GET /v1/generations/{id}` | `{ id, status, output }` |
 | Runway | `POST /v1图像生成任务` | `GET /v1图像生成任务/{id}` | `{ id, status, ... }` |
 
-**每个视频模型供应商都需要独立的适配器实现。**
+**每个已验证的视频协议族需要独立适配器实现；模型目录只能补全身份和展示建议，不能直接成为执行合同。**
+
+公共视频请求允许 `prompt` 或包含文本的 `content[]`，供应商私有字段必须放入 `provider_options` 命名空间。已确认的视频契约负责必填项、类型、枚举、边界、数组数量和嵌套对象校验；候选或未验证契约只能展示，不能限制或宣称“正常”。
 
 ### 响应标准化
 
@@ -1438,12 +1438,14 @@ POST /v1/audio/transcriptions
 POST /v1/video/generations
   请求: {
     model: string,              // 变体名
-    prompt: string,
+    prompt?: string,
+    content?: Array<{ type: "text" | "image" | "video" | "audio", text?: string, url?: string, role?: string }>,
     duration?: number,           // 秒
     aspect_ratio?: string,       // "16:9" | "9:16" | "1:1"
     callback_url?: string,       // 完成通知（必须 HTTPS）
     callback_secret?: string,    // 接收方 HMAC 验证密钥
-    idempotency_key?: string     // 客户端幂等 Key，同一 Key 重复提交返回已有任务
+    idempotency_key?: string,    // 客户端幂等 Key，同一 Key 重复提交返回已有任务
+    provider_options?: object    // 供应商扩展；只由对应适配器读取
   }
   响应: {
     id: string,                 // OpenHub task_id

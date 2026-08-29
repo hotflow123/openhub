@@ -5,12 +5,13 @@
  * drizzle/better-sqlite3 调用，避免 catalog 包反向依赖 server 包。
  */
 
-import { and, asc, desc, eq, like } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "../../db/index";
 import { modelCatalog, modelCatalogAlias, catalogSyncRuns } from "../../db/schema/index";
 import type { SyncDb } from "@openhub/catalog/sync";
 import type { AliasDb, AliasEntry } from "@openhub/catalog/sync";
-import type { MatcherDb } from "@openhub/catalog/matcher";
+import type { MatcherDb, ModelIdentityCandidate } from "@openhub/catalog/matcher";
+import { inferModalityFromCatalog } from "./modality";
 
 /**
  * Date 对象转秒级时间戳（数据库存储格式）
@@ -101,23 +102,22 @@ export const matcherDb: MatcherDb = {
       .limit(1);
     return row;
   },
-  async findCatalogByFamily(family) {
-    const [row] = await db
-      .select({ id: modelCatalog.id })
-      .from(modelCatalog)
-      .where(eq(modelCatalog.family, family))
-      .limit(1);
-    return row;
-  },
-  async findCatalogByIdPrefix(prefix) {
-    // 将 "jimeng/" 转换为 "jimeng/%" 以匹配任意后缀
-    // catalog 包传入的前缀是 "jimeng/" 形式，需要添加通配符
-    const pattern = prefix.endsWith("/") ? prefix + "%" : prefix;
-    const [row] = await db
-      .select({ id: modelCatalog.id })
-      .from(modelCatalog)
-      .where(like(modelCatalog.id, pattern))
-      .limit(1);
-    return row;
+  async findCatalogCandidates(): Promise<readonly ModelIdentityCandidate[]> {
+    const rows = await db
+      .select({
+        id: modelCatalog.id,
+        name: modelCatalog.name,
+        family: modelCatalog.family,
+        modalitiesIn: modelCatalog.modalitiesIn,
+        modalitiesOut: modelCatalog.modalitiesOut,
+      })
+      .from(modelCatalog);
+
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      family: row.family,
+      modality: inferModalityFromCatalog(row.modalitiesIn, row.modalitiesOut),
+    }));
   },
 };

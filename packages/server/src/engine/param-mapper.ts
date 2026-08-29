@@ -40,6 +40,8 @@ export interface AdapterMappingConfig {
   unpackProviderOptions?: (params: Record<string, unknown>) => Record<string, unknown>;
   /** 已知标准字段白名单；未列出且非 provider_options 一律丢弃 */
   knownFields?: string[];
+  /** 需要把 provider_options 原样交给适配器的连接器。 */
+  keepProviderOptions?: boolean;
 }
 
 export type FieldTransform =
@@ -104,6 +106,7 @@ export function mapStoredVariantParams(
   callerBody: Record<string, unknown>,
   variant: StoredVariantParamPolicy,
   knownFields: Iterable<string>,
+  options: { keepProviderOptions?: boolean } = {},
 ): ParamMapperOutput {
   const paramOverrides = parseStoredObject(variant.paramOverrides);
   const paramBlocked = parseStoredList(variant.paramBlocked);
@@ -126,6 +129,7 @@ export function mapStoredVariantParams(
         ...providerFields,
         ...mappedOverrideFields,
       ])),
+      keepProviderOptions: options.keepProviderOptions,
     },
   });
 }
@@ -178,6 +182,8 @@ export const CHAT_KNOWN_FIELDS: ReadonlySet<string> = new Set([
   // video
   "duration",
   "aspect_ratio",
+  "resolution",
+  "content",
   "reference_image_url",
   "reference_image_urls",
   "reference_video_url",
@@ -284,7 +290,7 @@ export function mapParams(input: ParamMapperInput): ParamMapperOutput {
   }
 
   // 删除 provider_options 容器本身
-  delete filtered["provider_options"];
+  if (!adapter.keepProviderOptions) delete filtered["provider_options"];
 
   return { body: filtered, dropped };
 }

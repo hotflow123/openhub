@@ -1,0 +1,58 @@
+{
+  "submitRequest": {
+    "model": "video-variant",
+    "content": [
+      {
+        "type": "text",
+        "text": "A quiet ocean at sunrise"
+      },
+      {
+        "type": "image",
+        "url": "https://example.test/input.jpg",
+        "role": "first_frame"
+      }
+    ],
+    "duration": 5,
+    "ratio": "16:9",
+    "resolution": "720P",
+    "aigc_watermark": false
+  },
+  "submitResponse": {
+    "task_id": "content_task_1",
+    "status": "queued"
+  },
+  "queryResponses": [
+    {
+      "task": {
+        "id": "content_task_1",
+        "status": "running"
+      }
+    },
+    {
+      "task": {
+        "id": "content_task_1",
+        "status": "succeeded",
+        "content": {
+          "url": "https://example.test/videos/content-array.mp4",
+          "resolution": "720P",
+          "duration": 5,
+          "ratio": "16:9"
+        },
+        "usage": {
+          "total_seconds": 5,
+          "output_seconds": 5
+        },
+        "task_type": "generation",
+        "modality": "video"
+      }
+    }
+  ],
+  "statusMap": {
+    "queued": "pending",
+    "running": "processing",
+    "succeeded": "completed",
+    "failed": "failed",
+    "cancelled": "failed"
+  },
+  "resultPathDescription": "task.content.url"
+}

@@ -16,7 +16,7 @@
     "catalog:init": "tsx --env-file=.env scripts/init.ts",
     "init": "tsx --env-file=.env scripts/init.ts",
     "sync:fal": "tsx src/scripts/sync-fal-encyclopedia.ts",
-    "test": "tsx --test test-model-contract.ts test-param-mapper.ts",
+    "test": "tsx --test test-model-contract.ts test-param-mapper.ts test-memefast-adapter.ts test-memefast-modality.ts test-model-profile-sync.ts test-model-matching.ts test-video-contract.ts test-video-adapters.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -26,7 +26,8 @@
     "better-sqlite3": "^11.2.0",
     "zod": "^3.23.0",
     "nanoid": "^5.0.7",
-    "@openhub/catalog": "workspace:*"
+    "@openhub/catalog": "workspace:*",
+    "@openhub/memefast": "workspace:*"
   },
   "devDependencies": {
     "drizzle-kit": "^0.28.0",

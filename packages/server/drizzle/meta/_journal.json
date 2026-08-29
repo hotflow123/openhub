@@ -36,6 +36,27 @@
       "when": 1787126891979,
       "tag": "0004_schema-match-evidence",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1787918400000,
+      "tag": "0005_add-model-adapter-source",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1787976000000,
+      "tag": "0006_add-model-modality-evidence",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788000000000,
+      "tag": "0007_add-video-contract",
+      "breakpoints": true
     }
   ]
 }

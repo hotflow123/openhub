@@ -1,4 +1,5 @@
 import { extractInputSchemaCapabilities } from "./fal-input-schema";
+import { parseStoredVideoContract, validateVideoContractRequest, type StoredVideoContract } from "../engine/video/contract";
 import {
   countReferenceMedia,
   validateReferenceLimitsAgainstModel,
@@ -18,6 +19,11 @@ export interface ModelContractSource {
   maxReferenceVideos: number | null;
   maxReferenceAudios: number | null;
   maxDurationSec: number | null;
+  videoContractSnapshot?: string | null;
+  videoContractSource?: string | null;
+  videoContractStatus?: string | null;
+  videoContractReason?: string | null;
+  videoContractSyncedAt?: Date | null;
 }
 
 export interface ModelInputContract extends ReferenceMediaLimits {
@@ -26,6 +32,7 @@ export interface ModelInputContract extends ReferenceMediaLimits {
   enums: Record<string, string[]>;
   totalReferenceFiles: number | null;
   audioRequiresImageOrVideo: boolean;
+  videoContract: StoredVideoContract | null;
 }
 
 export type ModelParameterLimits = Record<string, string[]>;
@@ -171,6 +178,9 @@ export function readModelInputContract(model: ModelContractSource): ModelInputCo
       : null,
     totalReferenceFiles: findTotalReferenceFiles(parameters, inputSchema),
     audioRequiresImageOrVideo: hasAudioDependency(parameters, inputSchema),
+    videoContract: model.videoContractStatus === "confirmed"
+      ? parseStoredVideoContract(model.videoContractSnapshot)
+      : null,
   };
 }
 
@@ -197,9 +207,20 @@ export function validateModelRequest(
   for (const field of contract.requiredFields) {
     if (ignored.has(field)) continue;
     const value = mappedValue(body, field, fieldMapping);
-    if (value == null || value === "" || (Array.isArray(value) && value.length === 0)) {
+    const contentHasText = field === "prompt" && Array.isArray(body.content)
+      && body.content.some((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+        const text = (item as Record<string, unknown>).text;
+        return typeof text === "string" && text.trim().length > 0;
+      });
+    if (!contentHasText && (value == null || value === "" || (Array.isArray(value) && value.length === 0))) {
       return `Missing required model parameter: ${field}`;
     }
+  }
+
+  if (contract.videoContract) {
+    const error = validateVideoContractRequest(body, contract.videoContract.contract);
+    if (error && !(error.includes("prompt") && Array.isArray(body.content))) return error;
   }
 
   for (const [field, allowed] of Object.entries(contract.enums)) {

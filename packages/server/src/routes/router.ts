@@ -75,7 +75,7 @@ async function resolveRouteFromVariant(variant: typeof variants.$inferSelect): P
     throw new RouterError(`Site ${site.name} is ${site.status}`, 503, "site_unavailable");
   }
 
-  const resolved = resolveAdapterForModel(modelRow.adapterId, site.adapterId);
+  const resolved = resolveAdapterForModel(modelRow.adapterId, modelRow.adapterSource, site.adapterId);
   if (!resolved) {
     throw new RouterError(
       `Adapter not found for model ${modelRow.rawName}: ${modelRow.adapterId} / ${site.adapterId}`,
@@ -160,11 +160,20 @@ function applyVariantParams<T extends Record<string, unknown>>(
   kind: RequestKind,
 ): T {
   const contract = readModelInputContract(route.model);
-  return mapStoredVariantParams(
+  const mapped = mapStoredVariantParams(
     body,
     route.variant,
     [...REQUEST_FIELDS[kind], ...contract.fields],
-  ).body as T;
+    { keepProviderOptions: route.adapter.id === "memefast" },
+  );
+  if (route.adapter.id === "memefast" && mapped.dropped.length > 0) {
+    throw new RouterError(
+      `Unknown parameter: ${mapped.dropped.join(", ")}`,
+      400,
+      "unknown_parameter",
+    );
+  }
+  return mapped.body as T;
 }
 
 export async function forwardChat(

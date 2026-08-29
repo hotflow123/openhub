@@ -27,6 +27,27 @@ function errorResponse(status: number, message: string, code?: string) {
   );
 }
 
+function hasTextContent(value: unknown): boolean {
+  return Array.isArray(value) && value.some((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const row = item as Record<string, unknown>;
+    return row.type === "text" && typeof row.text === "string" && row.text.trim().length > 0;
+  });
+}
+
+function validateContent(value: unknown): string | null {
+  if (value === undefined) return null;
+  if (!Array.isArray(value) || value.length === 0) return "content must be a non-empty array";
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return "content items must be objects";
+    const row = item as Record<string, unknown>;
+    if (!["text", "image", "video", "audio"].includes(String(row.type))) return "content item type is invalid";
+    if (row.type === "text" && typeof row.text !== "string") return "text content requires text";
+    if (row.type !== "text" && typeof row.url !== "string") return `${row.type} content requires url`;
+  }
+  return null;
+}
+
 video.post("/v1/video/generations", async (c) => {
   let body: Record<string, unknown>;
   try {
@@ -37,8 +58,10 @@ video.post("/v1/video/generations", async (c) => {
 
   const model = String(body.model ?? "");
   if (!model) return errorResponse(400, "Missing model (variant name)", "missing_model");
-  const prompt = String(body.prompt ?? "");
-  if (!prompt) return errorResponse(400, "Missing prompt", "missing_prompt");
+  const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+  if (!prompt && !hasTextContent(body.content)) return errorResponse(400, "Missing prompt or text content", "missing_prompt");
+  const contentError = validateContent(body.content);
+  if (contentError) return errorResponse(400, contentError, "invalid_content");
 
   let chain;
   try {

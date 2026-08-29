@@ -7,7 +7,12 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/v1": "http://localhost:3000",
-      "/admin": "http://localhost:3000",
+      "/admin": {
+        target: "http://localhost:3000",
+        bypass(req) {
+          return req.headers.accept?.includes("text/html") ? "/index.html" : undefined;
+        },
+      },
     },
   },
 });

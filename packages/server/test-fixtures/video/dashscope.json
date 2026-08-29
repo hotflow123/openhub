@@ -1,0 +1,43 @@
+{
+  "submitRequest": {
+    "model": "video-variant",
+    "prompt": "A quiet ocean at sunrise",
+    "duration": 5,
+    "resolution": "720P"
+  },
+  "submitResponse": {
+    "output": {
+      "task_id": "dashscope_task_1",
+      "task_status": "PENDING"
+    },
+    "code": "200",
+    "message": "Success"
+  },
+  "queryResponses": [
+    {
+      "output": {
+        "task_id": "dashscope_task_1",
+        "task_status": "RUNNING"
+      },
+      "code": "200"
+    },
+    {
+      "output": {
+        "task_id": "dashscope_task_1",
+        "task_status": "SUCCEEDED",
+        "video_url": "https://example.test/videos/dashscope.mp4",
+        "duration": 5,
+        "resolution": "720P"
+      },
+      "code": "200"
+    }
+  ],
+  "statusMap": {
+    "PENDING": "pending",
+    "RUNNING": "processing",
+    "SUCCEEDED": "completed",
+    "FAILED": "failed",
+    "CANCELED": "failed"
+  },
+  "resultPathDescription": "output.video_url"
+}

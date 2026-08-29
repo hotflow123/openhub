@@ -28,6 +28,12 @@ const REQUIRED_COLUMNS: Record<string, string[]> = {
     "schema_match_status",
     "schema_match_confidence",
     "schema_match_reason",
+    "adapter_source",
+    "video_contract_snapshot",
+    "video_contract_source",
+    "video_contract_status",
+    "video_contract_reason",
+    "video_contract_synced_at",
   ],
   model_schema_alias: ["source"],
   variants: [

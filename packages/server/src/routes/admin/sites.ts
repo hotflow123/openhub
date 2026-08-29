@@ -11,6 +11,7 @@ import { matchModelsForSite } from "../../engine/catalog/match-after-discover";
 import { matchSchemasForSite } from "../../engine/catalog/schema-matcher";
 import { writeAudit } from "../../lib/audit";
 import { withAdminAuth } from "./_with-auth";
+import { getAdapter, normalizeAdapterId } from "../../engine/adapter";
 
 // 开发模式允许私网/回环地址（localhost mock 站点）。生产部署必须 OPENHUB_ALLOW_PRIVATE_URLS=false 或不设。
 const ALLOW_PRIVATE_URLS = process.env.OPENHUB_ALLOW_PRIVATE_URLS === "true";
@@ -62,6 +63,10 @@ sitesRoute.post("/sites", async (c) => {
     return c.json({ error: parsed.error.flatten() }, 400);
   }
   const { name, baseUrl, apiKey, adapterId } = parsed.data;
+  const canonicalAdapterId = normalizeAdapterId(adapterId) ?? adapterId;
+  if (!getAdapter(canonicalAdapterId)) {
+    return c.json({ error: { message: `Unknown adapter: ${adapterId}`, code: "adapter_not_found" } }, 400);
+  }
 
   // P0-3: SSRF 校验
   try {
@@ -79,7 +84,7 @@ sitesRoute.post("/sites", async (c) => {
     baseUrl,
     apiKeyEnc: enc.ciphertext,
     apiKeyIv: enc.iv,
-    adapterId,
+    adapterId: canonicalAdapterId,
     status: "active",
   });
 
@@ -88,20 +93,20 @@ sitesRoute.post("/sites", async (c) => {
     action: "site.create",
     resourceType: "site",
     resourceId: id,
-    payload: JSON.stringify({ name, baseUrl, adapterId }),
+    payload: JSON.stringify({ name, baseUrl, adapterId: canonicalAdapterId }),
   });
 
   (async () => {
     try {
-      await discoverModels(id, baseUrl, apiKey);
-      await matchModelsForSite(id);
+    await discoverModels(id, baseUrl, apiKey, canonicalAdapterId);
       await matchSchemasForSite(id);
+      await matchModelsForSite(id);
     } catch (err) {
       console.error(`[sites] auto-discover failed for ${id}:`, err);
     }
   })();
 
-  return c.json({ data: { id, name, baseUrl, adapterId, status: "active" } }, 201);
+  return c.json({ data: { id, name, baseUrl, adapterId: canonicalAdapterId, status: "active" } }, 201);
 });
 
 sitesRoute.patch("/sites/:id", async (c) => {
@@ -109,6 +114,14 @@ sitesRoute.patch("/sites/:id", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const parsed = UpdateSiteSchema.safeParse(body);
   if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+  if (parsed.data.adapterId) {
+    const canonicalAdapterId = normalizeAdapterId(parsed.data.adapterId) ?? parsed.data.adapterId;
+    if (!getAdapter(canonicalAdapterId)) {
+      return c.json({ error: { message: `Unknown adapter: ${parsed.data.adapterId}`, code: "adapter_not_found" } }, 400);
+    }
+    parsed.data.adapterId = canonicalAdapterId;
+  }
 
   // P0-3: SSRF 校验（仅当 baseUrl 变更时）
   if (parsed.data.baseUrl) {
@@ -153,9 +166,9 @@ sitesRoute.post("/sites/:id/discover", async (c) => {
   const { decrypt } = await import("../../lib/crypto");
   const apiKey = await decrypt(site.apiKeyEnc, site.apiKeyIv, getMasterKey());
   try {
-    const result = await discoverModels(id, site.baseUrl, apiKey);
-    const match = await matchModelsForSite(id);
+    const result = await discoverModels(id, site.baseUrl, apiKey, site.adapterId);
     const schemaMatch = await matchSchemasForSite(id);
+    const match = await matchModelsForSite(id);
     await db
       .update(sites)
       .set({
@@ -184,7 +197,7 @@ sitesRoute.post("/sites/:id/health", async (c) => {
   const { decrypt } = await import("../../lib/crypto");
   const apiKey = await decrypt(site.apiKeyEnc, site.apiKeyIv, getMasterKey());
   const { getAdapter } = await import("../../engine/adapter");
-  const adapter = getAdapter(site.adapterId);
+  const adapter = getAdapter(normalizeAdapterId(site.adapterId) ?? site.adapterId);
   if (!adapter) return c.json({ error: "Adapter not found" }, 500);
   const ok = await adapter.healthCheck({ targetUrl: site.baseUrl, apiKey });
   if (site.status !== "disabled") {

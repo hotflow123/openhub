@@ -27,11 +27,21 @@ export const models = sqliteTable(
 
     // 适配器
     adapterId: text("adapter_id").notNull().default("openai-compatible"),
+    adapterSource: text("adapter_source", {
+      enum: ["site", "manual"],
+    }).notNull().default("site"),
 
     // 模态与能力
     modality: text("modality", {
-      enum: ["llm", "image", "audio", "video", "embedding"],
+      enum: ["llm", "image", "audio", "video", "embedding", "unknown"],
     }).notNull(),
+    modalitySource: text("modality_source", {
+      enum: ["manual", "runtime", "schema", "catalog", "keyword", "unknown"],
+    }).notNull().default("unknown"),
+    modalityConfidence: text("modality_confidence", {
+      enum: ["high", "medium", "low"],
+    }).notNull().default("low"),
+    modalityReason: text("modality_reason"),
     endpointCaps: text("endpoint_caps").notNull().default("[]"),
     paramCaps: text("param_caps").notNull().default("[]"),
 
@@ -64,6 +74,13 @@ export const models = sqliteTable(
     falPricing: text("fal_pricing"),
     falDescription: text("fal_description"),
     falSource: text("fal_source"),
+
+    // 来源中立的视频输入契约；仅 confirmed 可用于运行时校验
+    videoContractSnapshot: text("video_contract_snapshot"),
+    videoContractSource: text("video_contract_source"),
+    videoContractStatus: text("video_contract_status"),
+    videoContractReason: text("video_contract_reason"),
+    videoContractSyncedAt: integer("video_contract_synced_at", { mode: "timestamp" }),
 
     // 解析后的视频参数（来自 fal parameters）
     videoDurationEnum: text("video_duration_enum"),  // JSON array, e.g. ["auto","4","5",...,"30"]
@@ -136,6 +153,8 @@ export const CATALOG_MATCH_SOURCES = [
   "exact",
   "normalized",
   "alias",
+  "structured",
+  "fuzzy",
   "keyword",
   "admin",
   "probe",
@@ -148,6 +167,8 @@ export function isCatalogMatchSource(s: unknown): s is CatalogMatchSource {
     s === "exact" ||
     s === "normalized" ||
     s === "alias" ||
+    s === "structured" ||
+    s === "fuzzy" ||
     s === "keyword" ||
     s === "admin" ||
     s === "probe" ||

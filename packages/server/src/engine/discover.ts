@@ -4,14 +4,17 @@ import { models } from "../db/schema/index";
 import { inferModelCapability } from "./infer";
 import { matchSchema } from "./catalog/schema-matcher";
 import { extractInputSchemaCapabilities } from "../lib/fal-input-schema";
-import type { InferredCapability, ParameterSnapshot } from "./infer";
+import type {
+  ClassificationSource,
+  InferredCapability,
+  ModelModality,
+  ParameterSnapshot,
+} from "./infer";
+import { getAdapter, type DiscoveredRemoteModel } from "./adapter";
+import { buildDerivedModelProfile } from "./model-profile";
 
-interface DiscoveredModel {
+interface DiscoveredModel extends DiscoveredRemoteModel {
   id: string;
-  object?: string;
-  created?: number;
-  name?: string;
-  owned_by?: string;
 }
 
 /**
@@ -27,7 +30,7 @@ export function deriveModelId(siteId: string, remoteId: string): string {
  * DESIGN 第 7 章：
  * - raw_name 存站点返回的原始 id（如 "gpt-4o-mini"）
  * - display_name 暂用 m.name ?? m.id
- * - modality 缺省 "unknown"（discover 阶段无法判断）
+ * - modality 优先使用运行时、Schema 和名称家族规则，确无证据时才为 "unknown"
  * - caps_overridden = 0（首次发现，尚未被人工确认）
  * - status = "active"
  * 
@@ -37,22 +40,40 @@ export async function discoverModels(
   siteId: string,
   baseUrl: string,
   apiKey: string,
-): Promise<{ discovered: number; skipped: number }> {
-  const url = `${baseUrl.replace(/\/$/, "")}/v1/models`;
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!response.ok) {
-    throw new Error(`Discover models failed: HTTP ${response.status}`);
+  adapterId = "openai",
+): Promise<{ discovered: number; updated: number; offline: number; skipped: number }> {
+  const adapter = getAdapter(adapterId);
+  if (!adapter) throw new Error(`Adapter not found: ${adapterId}`);
+
+  let discoveredModels: DiscoveredModel[];
+  if (adapter.discoverModels) {
+    discoveredModels = await adapter.discoverModels({ targetUrl: baseUrl, apiKey });
+  } else {
+    const url = `${baseUrl.replace(/\/$/, "")}/v1/models`;
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) throw new Error(`Discover models failed: HTTP ${response.status}`);
+    const data = (await response.json()) as { data?: DiscoveredModel[] };
+    if (!Array.isArray(data.data)) throw new Error("Discover models failed: invalid response");
+    discoveredModels = data.data;
   }
-  const data = (await response.json()) as { data: DiscoveredModel[] };
 
   let discovered = 0;
+  let updated = 0;
+  let offline = 0;
   let skipped = 0;
+  const seenRemoteIds = new Set<string>();
 
-  for (const m of data.data) {
+  for (const m of discoveredModels) {
+    if (!m.id || typeof m.id !== "string") continue;
+    seenRemoteIds.add(m.id);
     const modelId = deriveModelId(siteId, m.id);
+    const runtimeHasVideoSchema = Boolean(
+      m.metadata && typeof m.metadata === "object" &&
+      ("parameters" in m.metadata || "input_schema" in m.metadata || "inputSchema" in m.metadata),
+    );
     const [existing] = await db
       .select()
       .from(models)
@@ -60,7 +81,38 @@ export async function discoverModels(
       .limit(1);
 
     if (existing) {
-      skipped++;
+      if (existing.adapterSource === "site") {
+        const update: Partial<typeof existing> = {
+          adapterId,
+          adapterSource: "site",
+          status: "active",
+          statusReason: null,
+          syncedAt: new Date(),
+          updatedAt: new Date(),
+        };
+        if (existing.capsOverridden === 0) {
+          const inferred = await inferModelCapability(m.id, {
+            runtimeMetadata: m.metadata,
+          });
+          Object.assign(update, buildDerivedModelProfile(inferred));
+          if (inferred.modality === "video" && !existing.videoContractStatus) {
+            Object.assign(update, {
+              videoContractSource: "runtime",
+              videoContractStatus: runtimeHasVideoSchema ? "candidate" : "unverified",
+              videoContractReason: runtimeHasVideoSchema
+                ? "runtime_schema_candidate_requires_confirmation"
+                : "runtime_model_list_has_no_video_input_schema",
+            });
+          }
+        }
+        await db
+          .update(models)
+          .set(update)
+          .where(eq(models.id, modelId));
+        updated++;
+      } else {
+        skipped++;
+      }
       continue;
     }
 
@@ -87,14 +139,18 @@ export async function discoverModels(
     }
 
     // 2. 自动推理模型能力（如果 schema 没有提供足够信息）
-    let modality: "llm" | "image" | "audio" | "video" | "embedding" = "llm";
+    let modality: ModelModality = "unknown";
+    let modalitySource: ClassificationSource = "unknown";
+    let modalityConfidence: "high" | "medium" | "low" = "low";
+    let modalityReason: string | null = "no classification evidence";
     let endpointCaps = "[]";
+    let paramCaps = "[]";
     let contextWindow: number | null = null;
     let maxOutputTokens: number | null = null;
     let maxDurationSec: number | null = null;
     let requiresAsync = 0;
     let supportedSizes: string | null = null;
-    let supportsStream = 1;
+    let supportsStream = 0;
 
     // fal 真实参数快照
     let falParametersSnapshot: string | null = null;
@@ -114,14 +170,41 @@ export async function discoverModels(
     let supportsFunctionCalling = 0;
     let supportsVision = 0;
     let supportsReasoning = 0;
+    let inferredVendor: string | null = null;
+    let inferredFamily: string | null = null;
+    let inferredVersion: string | null = null;
+    let videoContractSource: string | null = null;
+    let videoContractStatus: string | null = null;
+    let videoContractReason: string | null = null;
 
     try {
       // A candidate only suggests an endpoint to an administrator. It must not
       // populate real parameter limits until the association is confirmed.
       const inferred = await inferModelCapability(m.id, {
         schemaEndpointId: schemaMatchStatus === "confirmed" ? schemaEndpointId : null,
+        runtimeMetadata: m.metadata,
       });
+      inferredVendor = inferred.inferredVendor && inferred.inferredVendor !== "Unknown"
+        ? inferred.inferredVendor
+        : null;
+      inferredFamily = inferred.inferredFamily || null;
+      inferredVersion = inferred.inferredVersion || null;
       modality = inferred.modality;
+      modalitySource = inferred.classificationSource ?? "unknown";
+      modalityConfidence = inferred.classificationConfidence ?? "low";
+      modalityReason = inferred.classificationReason ?? null;
+      if (modality === "video") {
+        videoContractSource = "runtime";
+        videoContractStatus = runtimeHasVideoSchema ? "candidate" : "unverified";
+        videoContractReason = runtimeHasVideoSchema
+          ? "runtime_schema_candidate_requires_confirmation"
+          : "runtime_model_list_has_no_video_input_schema";
+      }
+      endpointCaps = JSON.stringify(inferred.endpointCaps ?? []);
+      paramCaps = JSON.stringify(inferred.paramCaps ?? []);
+      if (inferred.classificationSource === "runtime") {
+        supportsStream = inferred.endpointCaps?.includes("stream") ? 1 : 0;
+      }
 
       // === 持久化 fal.ai 完整元数据（之前完全丢失）===
       if (inferred.falEndpointId) {
@@ -199,7 +282,7 @@ export async function discoverModels(
       }
 
       // === 根据 modality 持久化 endpointCaps ===
-      if (inferred.modality === "video") {
+      if (inferred.modality === "video" && !(inferred.endpointCaps?.length)) {
         endpointCaps = JSON.stringify(["video_generation"]);
         if (inferred.video) {
           // 补充从 video{} 来的额外信息（仅当 video{} 存在时）
@@ -216,7 +299,7 @@ export async function discoverModels(
         if (inferred.video?.requiresAsync) {
           requiresAsync = 1;
         }
-      } else if (inferred.modality === "image") {
+      } else if (inferred.modality === "image" && !(inferred.endpointCaps?.length)) {
         const caps = ["image_generation"];
         if (inferred.image?.supportsInpainting) caps.push("image_editing");
         endpointCaps = JSON.stringify(caps);
@@ -233,7 +316,7 @@ export async function discoverModels(
         if (inferred.image?.optionalParams) {
           videoOptionalParams = JSON.stringify(inferred.image.optionalParams);
         }
-      } else if (inferred.modality === "llm") {
+      } else if (inferred.modality === "llm" && !(inferred.endpointCaps?.length)) {
         const caps = ["chat"];
         if (inferred.llm?.supportsVision) {
           caps.push("vision");
@@ -249,7 +332,7 @@ export async function discoverModels(
 
       console.log(`[discover] Inferred ${m.id}: ${modality} (confidence: ${inferred.confidence}, params: ${inferred.parameters?.length ?? 0})`);
     } catch (err) {
-      console.warn(`[discover] Failed to infer ${m.id}, defaulting to llm:`, err);
+      console.warn(`[discover] Failed to infer ${m.id}; keeping modality unknown:`, err);
     }
 
     await db.insert(models).values({
@@ -257,12 +340,17 @@ export async function discoverModels(
       siteId,
       rawName: m.id,
       displayName: m.name ?? m.id,
-      vendor: undefined,
-      family: undefined,
-      modelVersion: undefined,
+      vendor: inferredVendor,
+      family: inferredFamily,
+      modelVersion: inferredVersion,
+      adapterId,
+      adapterSource: "site",
       modality,
+      modalitySource,
+      modalityConfidence,
+      modalityReason,
       endpointCaps,
-      paramCaps: "[]",
+      paramCaps,
       capsOverridden: 0,
       // fal.ai 完整快照
       schemaEndpointId,
@@ -276,6 +364,10 @@ export async function discoverModels(
       falPricing,
       falDescription,
       falSource,
+      videoContractSource,
+      videoContractStatus,
+      videoContractReason,
+      videoContractSyncedAt: null,
       videoDurationEnum,
       videoAspectRatios,
       videoResolutions,
@@ -303,5 +395,15 @@ export async function discoverModels(
     discovered++;
   }
 
-  return { discovered, skipped };
+  const siteModels = await db.select().from(models).where(eq(models.siteId, siteId));
+  for (const model of siteModels) {
+    if (model.adapterSource !== "site" || seenRemoteIds.has(model.rawName)) continue;
+    await db
+      .update(models)
+      .set({ status: "offline", statusReason: "not_returned_by_upstream", updatedAt: new Date() })
+      .where(eq(models.id, model.id));
+    offline++;
+  }
+
+  return { discovered, updated, offline, skipped };
 }

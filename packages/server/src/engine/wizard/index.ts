@@ -10,14 +10,16 @@
  * 没有 LLM 变体时降级为纯手动（候选列表只用目录/关键词）。
  */
 
-import { asc, eq, like } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "../../db/index";
 import { models, variants, modelCatalog } from "../../db/schema/index";
 import { matchModel } from "@openhub/catalog/matcher";
 import type { Modality } from "./types";
+import { inferModalityFromCatalog } from "../catalog/modality";
+import { matcherDb } from "../catalog/db-adapter";
 
 // 复用 matcher 的 MatchResult 类型
-export type MatchSource = "exact" | "normalized" | "alias" | "keyword" | "admin" | "probe" | "none" | null;
+export type MatchSource = "exact" | "normalized" | "alias" | "fuzzy" | "keyword" | "admin" | "probe" | "none" | null;
 export type MatchConfidence = "high" | "medium" | "low" | null;
 
 export interface WizardStep1Result {
@@ -63,54 +65,7 @@ export async function step1Identity(modelId: string): Promise<WizardStep1Result>
   const [model] = await db.select().from(models).where(eq(models.id, modelId)).limit(1);
   if (!model) throw new WizardError("model_not_found", 404);
 
-  const match = await matchModel(
-    {
-      findCatalogById: async (id) => {
-        const [row] = await db
-          .select({ id: modelCatalog.id })
-          .from(modelCatalog)
-          .where(eq(modelCatalog.id, id))
-          .limit(1);
-        return row ? { id: row.id } : undefined;
-      },
-      findCatalogByNormalized: async (n) => {
-        const [row] = await db
-          .select({ id: modelCatalog.id })
-          .from(modelCatalog)
-          .where(eq(modelCatalog.id, n.replace(/\s+/g, "-")))
-          .limit(1);
-        return row ? { id: row.id } : undefined;
-      },
-      findCatalogAlias: async (alias) => {
-        const { modelCatalogAlias } = await import("../../db/schema/index");
-        const [row] = await db
-          .select({ catalogId: modelCatalogAlias.catalogId })
-          .from(modelCatalogAlias)
-          .where(eq(modelCatalogAlias.normalized, alias))
-          .orderBy(asc(modelCatalogAlias.priority), asc(modelCatalogAlias.catalogId))
-          .limit(1);
-        return row ? { catalogId: row.catalogId } : undefined;
-      },
-      findCatalogByFamily: async (family) => {
-        const [row] = await db
-          .select({ id: modelCatalog.id })
-          .from(modelCatalog)
-          .where(eq(modelCatalog.family, family))
-          .limit(1);
-        return row ? { id: row.id } : undefined;
-      },
-      findCatalogByIdPrefix: async (prefix) => {
-        const [row] = await db
-          .select({ id: modelCatalog.id })
-          .from(modelCatalog)
-          .where(like(modelCatalog.id, prefix))
-          .limit(1);
-        return row ? { id: row.id } : undefined;
-      },
-    },
-    model.rawName,
-    { allowKeywordFallback: true },
-  );
+  const match = await matchModel(matcherDb, model.rawName, { modality: model.modality });
 
   // 再做一次 LIKE 搜索，给管理员手动挑选的备选
   const likeRows = await db
@@ -262,6 +217,9 @@ export async function step4Confirm(
       endpointCaps: JSON.stringify(step2.endpointCaps),
       paramCaps: JSON.stringify(step2.paramCaps),
       capsOverridden: 1,
+      modalitySource: "manual",
+      modalityConfidence: "high",
+      modalityReason: "wizard_confirmed",
       syncedAt: now,
       status: "active",
     })
@@ -308,17 +266,6 @@ export class WizardError extends Error {
 }
 
 // ───────── helpers ─────────
-
-function inferModalityFromCatalog(inJson: string | null, outJson: string | null): Modality | null {
-  const inM = inJson ? (JSON.parse(inJson) as string[]) : [];
-  const outM = outJson ? (JSON.parse(outJson) as string[]) : [];
-  if (outM.includes("video")) return "video";
-  if (outM.includes("image")) return "image";
-  if (outM.includes("audio") || inM.includes("audio")) return "audio";
-  if (outM.includes("text")) return "llm";
-  if (outM.includes("embedding")) return "embedding";
-  return null;
-}
 
 function guessModalityFromName(name: string): Modality | "unknown" {
   const n = name.toLowerCase();
