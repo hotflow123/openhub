@@ -12,5 +12,5 @@ export interface SyncResult {
 export interface MatchResult {
   catalogModelId: string | null;
   confidence: number;
-  source: "exact" | "normalized" | "alias" | "keyword" | null;
+  source: "exact" | "normalized" | "alias" | "structured" | "fuzzy" | "keyword" | null;
 }

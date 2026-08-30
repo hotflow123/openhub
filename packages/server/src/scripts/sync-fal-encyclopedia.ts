@@ -41,9 +41,9 @@ interface EncyclopediaEntry {
   endpoint_id?: string;
   source?: string;
   openapi_url?: string;
-  input_schema?: Record<string, unknown>;
-  output_schema?: Record<string, unknown>;
-  parameters?: ParameterEntry[];
+  input_schema?: Record<string, unknown> | string;
+  output_schema?: Record<string, unknown> | string;
+  parameters?: ParameterEntry[] | string;
   status?: string;
   fetched_at?: string;
 }
@@ -89,6 +89,50 @@ function falCategoryToModality(
     return "llm";
   }
   return "unknown";
+}
+
+const IMAGE_CATEGORIES = new Set(["text-to-image", "image-to-image"]);
+const STRONG_VIDEO_PARAMETERS = new Set([
+  "duration",
+  "generate_audio",
+  "camera_fixed",
+  "end_image_url",
+  "num_frames",
+  "video_url",
+  "video_urls",
+]);
+
+function parseParameterEntries(value: EncyclopediaEntry["parameters"]): ParameterEntry[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string") return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function serializeJsonSnapshot(value: unknown): string | null {
+  if (value == null) return null;
+  let parsed = value;
+  for (let attempt = 0; attempt < 3 && typeof parsed === "string"; attempt++) {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return null;
+    }
+  }
+  return parsed && typeof parsed === "object" ? JSON.stringify(parsed) : null;
+}
+
+function schemaIntegrityIssue(category: string, parameters: ParameterEntry[]): string | null {
+  if (!IMAGE_CATEGORIES.has(category)) return null;
+  const names = new Set(parameters.map((parameter) => parameter.name));
+  const videoEvidence = [...STRONG_VIDEO_PARAMETERS].filter((name) => names.has(name));
+  return videoEvidence.length >= 2
+    ? `${category} schema contains video parameters: ${videoEvidence.join(", ")}`
+    : null;
 }
 
 // 生成稳定的别名 ID。稳定 ID 让增量同步可审计，也避免每次同步制造新主键。
@@ -166,10 +210,17 @@ export async function syncFalEncyclopedia(options: {
     const seenAliasIds = new Set<string>();
     const schemaEntries: (typeof modelSchemaCatalog.$inferInsert)[] = [];
     const aliasEntries: (typeof modelSchemaAlias.$inferInsert)[] = [];
+    let quarantined = 0;
 
     for (const [endpointId, entry] of Object.entries(data.models)) {
       if (seenEndpoints.has(endpointId)) continue;
       seenEndpoints.add(endpointId);
+
+      const parameters = parseParameterEntries(entry.parameters);
+      const issue = schemaIntegrityIssue(entry.category ?? "unknown", parameters);
+      if (issue) quarantined++;
+      const inputSchema = issue ? null : serializeJsonSnapshot(entry.input_schema);
+      const outputSchema = issue ? null : serializeJsonSnapshot(entry.output_schema);
 
       schemaEntries.push({
         endpointId,
@@ -180,12 +231,12 @@ export async function syncFalEncyclopedia(options: {
         falSource: (entry.source as "queue" | "realtime") ?? null,
         description: entry.description ?? null,
         pricing: entry.pricing ?? null,
-        inputSchema: entry.input_schema ? JSON.stringify(entry.input_schema) : null,
-        outputSchema: entry.output_schema ? JSON.stringify(entry.output_schema) : null,
-        parameters: entry.parameters ? JSON.stringify(entry.parameters) : null,
+        inputSchema,
+        outputSchema,
+        parameters: issue || parameters.length === 0 ? null : JSON.stringify(parameters),
         apiDocs: entry.api_docs ?? null,
         openapiUrl: entry.openapi_url ?? null,
-        status: (entry.status as "ok" | "no_schema" | "error") ?? "ok",
+        status: issue ? "error" : ((entry.status as "ok" | "no_schema" | "error") ?? "ok"),
         source: "fal-ai",
         fetchedAt: Math.floor(fetchedAt.getTime() / 1000),
         generatedAt: data.meta.generated_at,
@@ -290,6 +341,9 @@ export async function syncFalEncyclopedia(options: {
     console.log(
       `[fal-sync] ok: total=${result.total} added=${result.added} updated=${result.updated} aliases=${result.aliases} (${result.durationMs}ms)`,
     );
+    if (quarantined > 0) {
+      console.warn(`[fal-sync] quarantined ${quarantined} schema entries with category/parameter conflicts`);
+    }
     return result;
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);

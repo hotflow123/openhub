@@ -26,7 +26,7 @@ async function main() {
 
   samples.forEach(s => {
     console.log(`  ${s.endpointId}`);
-    console.log(`    vendor: ${s.vendor}, family: ${s.family}, modality: ${s.modality}`);
+    console.log(`    falModelId: ${s.falModelId}, category: ${s.falCategory}, modality: ${s.modality}`);
   });
 
   // 4. 查看视频模型的 alias

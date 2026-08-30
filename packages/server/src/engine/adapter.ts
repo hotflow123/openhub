@@ -154,12 +154,26 @@ export interface VideoResult {
   duration?: number;
   width?: number;
   height?: number;
+  ratio?: string;
+  resolution?: string;
+  usage?: Record<string, number>;
+  task_type?: string;
+  modality?: string;
+  provider_metadata?: Record<string, unknown>;
   seed?: number;
   [key: string]: unknown;
 }
 
 export interface VideoSubmitRequest {
-  /** 调用方提供的原始参数（含 prompt/duration/aspect_ratio 等） */
+  model?: string;
+  prompt?: string;
+  content?: Array<{ type: "text" | "image" | "video" | "audio"; text?: string; url?: string; role?: string }>;
+  duration?: number | string;
+  aspect_ratio?: string;
+  resolution?: string;
+  callback_url?: string;
+  idempotency_key?: string;
+  provider_options?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -189,6 +203,15 @@ export interface ForwardContext {
   config?: Record<string, unknown>;
 }
 
+export interface DiscoveredRemoteModel {
+  id: string;
+  object?: string;
+  created?: number;
+  name?: string;
+  owned_by?: string;
+  metadata?: Record<string, unknown>;
+}
+
 export interface Adapter {
   id: string;
   /** 该适配器支持的 endpoint_caps 列表 */
@@ -206,6 +229,8 @@ export interface Adapter {
   forwardEmbedding?(req: EmbeddingRequest, ctx: ForwardContext): Promise<EmbeddingResponse>;
   /** 检查站点是否在线（轻量级 GET /v1/models） */
   healthCheck(ctx: ForwardContext): Promise<boolean>;
+  /** 适配器自定义模型发现；未提供时由兼容协议兜底。 */
+  discoverModels?(ctx: ForwardContext): Promise<DiscoveredRemoteModel[]>;
 
   // Phase 3A — Image
   forwardImageGeneration?(
@@ -258,9 +283,12 @@ export function normalizeAdapterId(id: string | null | undefined): string | null
  */
 export function resolveAdapterForModel(
   modelAdapterId: string | null | undefined,
+  modelAdapterSource: "site" | "manual" | null | undefined,
   siteAdapterId: string | null | undefined,
 ): { adapter: Adapter; adapterId: string } | null {
-  const candidates = [normalizeAdapterId(modelAdapterId), normalizeAdapterId(siteAdapterId)]
+  const candidates = (modelAdapterSource === "manual"
+    ? [normalizeAdapterId(modelAdapterId), normalizeAdapterId(siteAdapterId)]
+    : [normalizeAdapterId(siteAdapterId), normalizeAdapterId(modelAdapterId)])
     .filter((id): id is string => Boolean(id));
   for (const id of candidates) {
     const adapter = getAdapter(id);
@@ -296,8 +324,15 @@ export function requiredCapabilityForModality(modality: string): string | null {
 }
 
 export function validateAdapterCapability(adapter: Adapter, modality: string): string | null {
+  if (modality === "unknown") {
+    return "Model modality is unknown; confirm the model capability before creating a callable variant";
+  }
   const required = requiredCapabilityForModality(modality);
   if (!required) return null;
+  if (modality === "video") {
+    const missing = ["video.submit", "video.query"].filter((capability) => !adapter.capabilities.includes(capability));
+    return missing.length > 0 ? `Adapter ${adapter.id} does not support ${missing.join(" and ")}` : null;
+  }
   const alternatives = modality === "audio"
     ? ["audio.speech", "audio.transcription"]
     : modality === "image"

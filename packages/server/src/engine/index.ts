@@ -4,6 +4,7 @@ import { klingAdapter } from "./adapters/kling";
 import { wanAdapter } from "./adapters/wan";
 import { seedanceAdapter } from "./adapters/seedance";
 import { grokAdapter } from "./adapters/grok";
+import { memefastAdapter } from "./adapters/memefast";
 
 /**
  * 注册所有内置适配器
@@ -14,6 +15,7 @@ export function bootstrapAdapters(): void {
   registerAdapter(wanAdapter);
   registerAdapter(seedanceAdapter);
   registerAdapter(grokAdapter);
+  registerAdapter(memefastAdapter);
 }
 
 export { listAdapters };

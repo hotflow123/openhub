@@ -31,6 +31,8 @@ import {
 import { createHmac } from "node:crypto";
 import { logger } from "../../lib/log";
 import { mapStoredVariantParams } from "../param-mapper";
+import { readModelInputContract } from "../../lib/model-contract";
+import { normalizeVideoQuery } from "../video/normalize";
 
 let pollTimer: NodeJS.Timeout | null = null;
 let callbackTimer: NodeJS.Timeout | null = null;
@@ -121,28 +123,15 @@ export async function submitPendingTasks(): Promise<number> {
         continue;
       }
 
-      const schemaFields = (() => {
-        try {
-          const parsed = variant.modelId && model.falParametersSnapshot
-            ? JSON.parse(model.falParametersSnapshot)
-            : [];
-          return Array.isArray(parsed)
-            ? parsed.map((p: { name?: unknown }) => p.name).filter((n: unknown): n is string => typeof n === "string")
-            : [];
-        } catch {
-          return [];
-        }
-      })();
-      const requestFields = schemaFields.length > 0
-        ? schemaFields
-        : Object.keys(meta).filter((field) => field !== "variant_id");
-      const submitInput = mapStoredVariantParams(
+      const contract = readModelInputContract(model);
+      const mapped = mapStoredVariantParams(
         { ...meta },
         variant,
         [
-          ...requestFields,
+          ...contract.fields,
           "model",
           "prompt",
+          "content",
           "duration",
           "aspect_ratio",
           "resolution",
@@ -152,7 +141,12 @@ export async function submitPendingTasks(): Promise<number> {
           "callback_url",
           "idempotency_key",
         ],
-      ).body;
+        { keepProviderOptions: true },
+      );
+      if (mapped.dropped.length > 0) {
+        throw new Error(`unknown_parameter: ${mapped.dropped.join(", ")}`);
+      }
+      const submitInput = mapped.body;
       const result = await adapter.submitVideoTask(submitInput, {
         targetUrl: site.baseUrl,
         apiKey,
@@ -209,25 +203,27 @@ export async function pollOnce(): Promise<void> {
         config: variant.adapterConfig ? JSON.parse(variant.adapterConfig) : undefined,
       });
 
-      const raw = (result as { raw?: unknown }).raw;
-      const statusField =
-        typeof raw === "object" && raw !== null && "status" in raw
-          ? (raw as { status?: unknown }).status
-          : result.status;
-      const mappedStatus = adapter.mapVideoStatus
-        ? adapter.mapVideoStatus(statusField)
-        : (statusField as "pending" | "processing" | "completed" | "failed" | "timeout");
+      const mappedStatus = result.status;
+      const fallbackResult = result.result ?? (
+        result.raw && adapter.transformVideoResult
+          ? adapter.transformVideoResult(result.raw)
+          : undefined
+      );
+      const normalized = mappedStatus === "completed"
+        ? normalizeVideoQuery(mappedStatus, fallbackResult, result.error)
+        : result;
+      const finalStatus = normalized.status;
 
       const completedNow = new Date();
 
       // 只在真正终态时写 completed_at
       const updated = await writeTaskPoll(task.id, "processing", {
-        status: mappedStatus,
-        result: result.result ? JSON.stringify(result.result) : null,
+        status: finalStatus,
+        result: normalized.result ? JSON.stringify(normalized.result) : null,
         resultExpiresAt: (result as { result_expires_at?: Date }).result_expires_at ?? null,
-        error: result.error ?? null,
+        error: normalized.error ?? null,
         completedAt:
-          mappedStatus === "completed" || mappedStatus === "failed"
+          finalStatus === "completed" || finalStatus === "failed"
             ? completedNow
             : null,
       });
@@ -237,9 +233,9 @@ export async function pollOnce(): Promise<void> {
         continue;
       }
 
-      if (mappedStatus === "completed" || mappedStatus === "failed" || mappedStatus === "timeout") {
+      if (finalStatus === "completed" || finalStatus === "failed" || finalStatus === "timeout") {
         await scheduleCallback(task.id);
-        logger.info(`[tasks] ${task.id} → ${mappedStatus}`);
+        logger.info(`[tasks] ${task.id} → ${finalStatus}`);
       }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);

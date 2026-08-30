@@ -53,7 +53,7 @@ async function main() {
   }
 
   const masterKey = getMasterKey();
-  const apiKey = decrypt(site.apiKeyEnc, site.apiKeyIv, masterKey);
+  const apiKey = await decrypt(site.apiKeyEnc, site.apiKeyIv, masterKey);
   console.log(`✓ API Key 解密成功: ${apiKey.substring(0, 10)}...\n`);
 
   // 3. 清空该站点的现有模型
@@ -67,12 +67,12 @@ async function main() {
   console.log("⏳ 开始模型发现...");
   try {
     const discovered = await discoverModels(site.id, site.baseUrl, apiKey);
-    console.log(`✅ 发现 ${discovered.length} 个模型\n`);
+    console.log(`✅ 发现 ${discovered.discovered} 个模型\n`);
 
     // 5. 查询发现的模型详情
     const foundModels = await db
       .select({
-        name: models.name,
+        name: models.rawName,
         modality: models.modality,
         endpointCaps: models.endpointCaps,
         contextWindow: models.contextWindow,

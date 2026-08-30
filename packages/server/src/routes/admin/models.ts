@@ -21,9 +21,13 @@ modelsRoute.get("/models", async (c) => {
       family: models.family,
       modelVersion: models.modelVersion,
       modality: models.modality,
+      modalitySource: models.modalitySource,
+      modalityConfidence: models.modalityConfidence,
+      modalityReason: models.modalityReason,
       endpointCaps: models.endpointCaps,
       paramCaps: models.paramCaps,
       adapterId: models.adapterId,
+      adapterSource: models.adapterSource,
       catalogModelId: models.catalogModelId,
       catalogMatchSource: models.catalogMatchSource,
       catalogMatchConfidence: models.catalogMatchConfidence,
@@ -38,8 +42,13 @@ modelsRoute.get("/models", async (c) => {
       falParametersSnapshot: models.falParametersSnapshot,
       falInputSchemaSnapshot: models.falInputSchemaSnapshot,
       falPricing: models.falPricing,
-      falDescription: models.falDescription,
-      falSource: models.falSource,
+       falDescription: models.falDescription,
+       falSource: models.falSource,
+       videoContractSnapshot: models.videoContractSnapshot,
+       videoContractSource: models.videoContractSource,
+       videoContractStatus: models.videoContractStatus,
+       videoContractReason: models.videoContractReason,
+       videoContractSyncedAt: models.videoContractSyncedAt,
       // 视频参数
       videoDurationEnum: models.videoDurationEnum,
       videoAspectRatios: models.videoAspectRatios,
@@ -84,9 +93,13 @@ modelsRoute.get("/models", async (c) => {
           family: models.family,
           modelVersion: models.modelVersion,
           modality: models.modality,
+          modalitySource: models.modalitySource,
+          modalityConfidence: models.modalityConfidence,
+          modalityReason: models.modalityReason,
           endpointCaps: models.endpointCaps,
           paramCaps: models.paramCaps,
           adapterId: models.adapterId,
+          adapterSource: models.adapterSource,
           catalogModelId: models.catalogModelId,
           catalogMatchSource: models.catalogMatchSource,
           catalogMatchConfidence: models.catalogMatchConfidence,
@@ -100,8 +113,13 @@ modelsRoute.get("/models", async (c) => {
           falParametersSnapshot: models.falParametersSnapshot,
           falInputSchemaSnapshot: models.falInputSchemaSnapshot,
           falPricing: models.falPricing,
-          falDescription: models.falDescription,
-          falSource: models.falSource,
+           falDescription: models.falDescription,
+           falSource: models.falSource,
+           videoContractSnapshot: models.videoContractSnapshot,
+           videoContractSource: models.videoContractSource,
+           videoContractStatus: models.videoContractStatus,
+           videoContractReason: models.videoContractReason,
+           videoContractSyncedAt: models.videoContractSyncedAt,
           videoDurationEnum: models.videoDurationEnum,
           videoAspectRatios: models.videoAspectRatios,
           videoResolutions: models.videoResolutions,
@@ -149,7 +167,8 @@ const PatchModelSchema = z.object({
   vendor: z.string().nullable().optional(),
   family: z.string().nullable().optional(),
   modelVersion: z.string().nullable().optional(),
-  modality: z.enum(["llm", "image", "audio", "video", "embedding"]).optional(),
+  modality: z.enum(["llm", "image", "audio", "video", "embedding", "unknown"]).optional(),
+  adapterId: z.string().optional(),
   endpointCaps: z.array(z.string()).optional(),
   paramCaps: z.array(z.string()).optional(),
   contextWindow: z.number().int().nullable().optional(),
@@ -203,6 +222,15 @@ modelsRoute.patch("/models/:id", async (c) => {
   }
   const parsed = PatchModelSchema.safeParse(body);
   if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+  if (parsed.data.adapterId !== undefined) {
+    const { getAdapter, normalizeAdapterId } = await import("../../engine/adapter");
+    const canonicalAdapterId = normalizeAdapterId(parsed.data.adapterId) ?? parsed.data.adapterId;
+    if (!getAdapter(canonicalAdapterId)) {
+      return c.json({ error: { message: `Unknown adapter: ${parsed.data.adapterId}`, code: "adapter_not_found" } }, 400);
+    }
+    parsed.data.adapterId = canonicalAdapterId;
+  }
 
   const update: Partial<ModelRow> = {};
   // 标记能力相关字段被人工修改
@@ -259,6 +287,10 @@ modelsRoute.patch("/models/:id", async (c) => {
   }
 
   // 命名元数据
+  if (parsed.data.adapterId !== undefined) {
+    update.adapterId = parsed.data.adapterId;
+    update.adapterSource = "manual";
+  }
   if (parsed.data.displayName !== undefined) update.displayName = parsed.data.displayName;
   if (parsed.data.vendor !== undefined) update.vendor = parsed.data.vendor;
   if (parsed.data.family !== undefined) update.family = parsed.data.family;
@@ -290,7 +322,12 @@ modelsRoute.patch("/models/:id", async (c) => {
     update.maxReferenceVideos = null;
     update.maxReferenceAudios = null;
   }
-  if (capsTouched) update.capsOverridden = 1;
+  if (capsTouched) {
+    update.capsOverridden = 1;
+    update.modalitySource = "manual";
+    update.modalityConfidence = "high";
+    update.modalityReason = "admin_override";
+  }
 
   update.updatedAt = new Date();
 
@@ -306,6 +343,15 @@ modelsRoute.patch("/models/:id", async (c) => {
       action: "model.schema.clear",
       resourceType: "model",
       resourceId: id,
+    });
+  }
+  if (parsed.data.adapterId !== undefined) {
+    await writeAudit({
+      actor: "admin",
+      action: "model.adapter.override",
+      resourceType: "model",
+      resourceId: id,
+      payload: JSON.stringify({ adapterId: parsed.data.adapterId, adapterSource: "manual" }),
     });
   }
   return c.json({ data: row });

@@ -10,13 +10,11 @@
  *   import { inferFromVariant } from "../../engine/infer";
  *   const result = await inferFromVariant("e2e-wizard-...", [{role:"user",content:"..."}]);
  */
-import { db } from "../db/index";
-import { variants, models, sites } from "../db/schema/index";
-import { eq } from "drizzle-orm";
 import { decrypt, getMasterKey } from "../lib/crypto";
 import { mapParams } from "./param-mapper";
 import type { Variant } from "../db/schema/index";
 import type { ChatRequest } from "./adapter";
+import { parseModelIdentity } from "@openhub/catalog/matcher";
 
 export interface InferMessage {
   role: "system" | "user" | "assistant";
@@ -75,6 +73,9 @@ export async function inferFromVariant(
   messages: InferMessage[],
   options: InferOptions = {},
 ): Promise<InferResult> {
+  const { db } = await import("../db/index.js");
+  const { variants, models, sites } = await import("../db/schema/index.js");
+  const { eq } = await import("drizzle-orm");
   const [variant] = await db
     .select()
     .from(variants)
@@ -165,6 +166,22 @@ export interface AudioCapability {
   parameters?: ParameterSnapshot[];
 }
 
+export type ModelModality =
+  | "llm"
+  | "video"
+  | "image"
+  | "audio"
+  | "embedding"
+  | "unknown";
+
+export type ClassificationSource =
+  | "manual"
+  | "runtime"
+  | "schema"
+  | "catalog"
+  | "keyword"
+  | "unknown";
+
 /**
  * 单个参数快照（来自 fal.ai parameters[] 数组中的每条记录）
  */
@@ -184,8 +201,13 @@ export interface InferredCapability {
   inferredVendor?: string;
   inferredFamily?: string;
   inferredVersion?: string;
-  modality: "llm" | "video" | "image" | "audio";
+  modality: ModelModality;
   confidence: number;
+  endpointCaps?: string[];
+  paramCaps?: string[];
+  classificationSource?: ClassificationSource;
+  classificationConfidence?: "high" | "medium" | "low";
+  classificationReason?: string;
   // fal.ai schema 元数据快照
   falEndpointId?: string;
   falSource?: "queue" | "realtime";
@@ -206,11 +228,402 @@ export interface InferredCapability {
   audio?: AudioCapability;
 }
 
-export interface InferOptions {
+export interface ModelInferenceOptions {
   /** 可选的 fal.ai schema endpoint_id（从 fal 百科关联） */
   schemaEndpointId?: string | null;
   /** 可选的站点 ID */
   siteId?: string;
+  /** 站点发现接口返回的原始模型元数据 */
+  runtimeMetadata?: Record<string, unknown>;
+  /** 已确认的模型目录模态，仅作为低优先级补全 */
+  catalogModality?: ModelModality | null;
+}
+
+interface ModelNameRule {
+  pattern: RegExp;
+  vendor: string;
+  family: string;
+  modality: ModelModality;
+  confidence: number;
+  endpointCaps: string[];
+  paramCaps?: string[];
+  reason: string;
+}
+
+const MODEL_NAME_RULES: readonly ModelNameRule[] = [
+  {
+    pattern: /(?:^|[/_-])(?:bce|bge|e5|voyage)[^/]*?(?:rerank|reranker|embedding|embed)(?:[/_.-]|$)|(?:^|[/])(?:rerank|reranker)(?:[/_.-]|$)/,
+    vendor: "Unknown",
+    family: "embedding",
+    modality: "embedding",
+    confidence: 0.92,
+    endpointCaps: ["embedding"],
+    reason: "embedding and reranker family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])qwen[^/]*?(?:rerank|reranker)(?:[/_.-]|$)/,
+    vendor: "Alibaba",
+    family: "qwen-reranker",
+    modality: "embedding",
+    confidence: 0.92,
+    endpointCaps: ["embedding"],
+    reason: "embedding and reranker family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])minimax[/_-].*(?:file[/_-]?upload|voice[/_-]?clone|voice[/_-]?design)/,
+    vendor: "MiniMax",
+    family: "minimax",
+    modality: "unknown",
+    confidence: 0.85,
+    endpointCaps: ["service_endpoint"],
+    reason: "service endpoint name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])(?:suno)(?:[/_-]|$)/,
+    vendor: "Suno",
+    family: "suno",
+    modality: "audio",
+    confidence: 0.9,
+    endpointCaps: ["audio_generation"],
+    reason: "audio family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])mj(?:[/_-]|$)|(?:^|[/_-])midjourney(?:[/_-]|$)/,
+    vendor: "Midjourney",
+    family: "midjourney",
+    modality: "image",
+    confidence: 0.9,
+    endpointCaps: ["image_generation"],
+    reason: "image family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])pixverse[/_-]+image(?:[/_-]|$)/,
+    vendor: "PixVerse",
+    family: "pixverse",
+    modality: "image",
+    confidence: 0.9,
+    endpointCaps: ["image_generation"],
+    reason: "image family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])pixverse[/_-]+sound[/_-]+effect(?:[/_-]|$)/,
+    vendor: "PixVerse",
+    family: "pixverse",
+    modality: "audio",
+    confidence: 0.9,
+    endpointCaps: ["audio_generation"],
+    reason: "audio family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])pixverse(?:[/_-]|$)/,
+    vendor: "PixVerse",
+    family: "pixverse",
+    modality: "video",
+    confidence: 0.9,
+    endpointCaps: ["video_generation"],
+    reason: "video family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])happyhorse(?:[/_-]|$)/,
+    vendor: "Unknown",
+    family: "happyhorse",
+    modality: "video",
+    confidence: 0.9,
+    endpointCaps: ["video_generation"],
+    reason: "video family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])vidu(?:q|[/_.0-9-]|$)/,
+    vendor: "ShengShu",
+    family: "vidu",
+    modality: "video",
+    confidence: 0.9,
+    endpointCaps: ["video_generation"],
+    reason: "video family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])seedream(?:[/_.0-9-]|$)/,
+    vendor: "Doubao / ByteDance",
+    family: "seedream",
+    modality: "image",
+    confidence: 0.9,
+    endpointCaps: ["image_generation"],
+    reason: "image family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])seedance(?:[/_.0-9-]|$)/,
+    vendor: "Doubao / ByteDance",
+    family: "seedance",
+    modality: "video",
+    confidence: 0.9,
+    endpointCaps: ["video_generation"],
+    reason: "video family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])kling[/_-]+image(?:[/_-]|$)/,
+    vendor: "Kuaishou",
+    family: "kling",
+    modality: "image",
+    confidence: 0.9,
+    endpointCaps: ["image_generation"],
+    reason: "image family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])kling[/_-]+audio(?:[/_-]|$)/,
+    vendor: "Kuaishou",
+    family: "kling",
+    modality: "audio",
+    confidence: 0.9,
+    endpointCaps: ["audio_generation"],
+    reason: "audio family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])(?:grok[/_-]+imagine[/_-]+video|grok[/_-]+video)(?:[/_-]|$)/,
+    vendor: "xAI",
+    family: "grok-imagine-video",
+    modality: "video",
+    confidence: 0.9,
+    endpointCaps: ["video_generation"],
+    reason: "video family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])grok[/_-]+imagine[/_-]+image(?:[/_-]|$)/,
+    vendor: "xAI",
+    family: "grok-imagine-image",
+    modality: "image",
+    confidence: 0.9,
+    endpointCaps: ["image_generation"],
+    reason: "image family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])qwen[/_-]+image(?:[/_-]|$)/,
+    vendor: "Alibaba",
+    family: "qwen-image",
+    modality: "image",
+    confidence: 0.9,
+    endpointCaps: ["image_generation"],
+    reason: "image family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])(?:ernie)(?:[/_-]|$)/,
+    vendor: "Baidu",
+    family: "ernie",
+    modality: "llm",
+    confidence: 0.82,
+    endpointCaps: ["chat"],
+    paramCaps: ["stream"],
+    reason: "LLM family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])sparkdesk(?:[/_-]|$)/,
+    vendor: "iFlytek",
+    family: "sparkdesk",
+    modality: "llm",
+    confidence: 0.82,
+    endpointCaps: ["chat"],
+    paramCaps: ["stream"],
+    reason: "LLM family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])llama(?:[/_-]|$)/,
+    vendor: "Meta",
+    family: "llama",
+    modality: "llm",
+    confidence: 0.82,
+    endpointCaps: ["chat"],
+    paramCaps: ["stream"],
+    reason: "LLM family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])qwen(?:[/_-]|\d|$)|(?:^|[/_-])qwq(?:[/_-]|\d|$)|(?:^|[/_-])qvq(?:[/_-]|\d|$)/,
+    vendor: "Alibaba",
+    family: "qwen",
+    modality: "llm",
+    confidence: 0.82,
+    endpointCaps: ["chat"],
+    paramCaps: ["stream"],
+    reason: "LLM family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])glm(?:[/_-]|\d|$)/,
+    vendor: "Zhipu AI",
+    family: "glm",
+    modality: "llm",
+    confidence: 0.82,
+    endpointCaps: ["chat"],
+    paramCaps: ["stream"],
+    reason: "LLM family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])o1(?:[/_-]|\d|$)/,
+    vendor: "OpenAI",
+    family: "o",
+    modality: "llm",
+    confidence: 0.82,
+    endpointCaps: ["chat"],
+    paramCaps: ["stream"],
+    reason: "LLM family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])(?:babbage|davinci)(?:[/_-]|\d|$)/,
+    vendor: "OpenAI",
+    family: "openai-completions",
+    modality: "llm",
+    confidence: 0.82,
+    endpointCaps: ["completion"],
+    paramCaps: ["stream"],
+    reason: "LLM family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])doubao[/_-]+seed[/_-]+1[/_-]+6[/_-]+thinking(?:[/_-]|\d|$)/,
+    vendor: "Doubao / ByteDance",
+    family: "seed",
+    modality: "llm",
+    confidence: 0.82,
+    endpointCaps: ["chat", "reasoning"],
+    paramCaps: ["stream"],
+    reason: "LLM family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])wen[/_-]+max(?:[/_-]|\d|$)/,
+    vendor: "Alibaba",
+    family: "qwen",
+    modality: "llm",
+    confidence: 0.78,
+    endpointCaps: ["chat"],
+    paramCaps: ["stream"],
+    reason: "LLM family name rule",
+  },
+];
+
+function stringList(value: unknown): string[] {
+  if (typeof value === "string") return value.trim() ? [value.trim()] : [];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
+}
+
+function unique(values: string[]): string[] {
+  return Array.from(new Set(values));
+}
+
+function inferFromModelNameRules(rawName: string): InferredCapability | null {
+  const lower = rawName.toLowerCase();
+  const rule = MODEL_NAME_RULES.find((candidate) => candidate.pattern.test(lower));
+  if (!rule) return null;
+
+  const identity = parseModelIdentity(rawName);
+  return {
+    inferredVendor: rule.vendor,
+    inferredFamily: rule.family,
+    inferredVersion: identity.version ?? "",
+    modality: rule.modality,
+    confidence: rule.confidence,
+    endpointCaps: rule.endpointCaps,
+    paramCaps: rule.paramCaps ?? [],
+    classificationSource: "keyword",
+    classificationConfidence: classificationConfidence(rule.confidence),
+    classificationReason: rule.reason,
+  };
+}
+
+function classificationConfidence(value: number): "high" | "medium" | "low" {
+  if (value >= 0.9) return "high";
+  if (value >= 0.7) return "medium";
+  return "low";
+}
+
+function runtimeEndpointCaps(metadata: Record<string, unknown>): string[] {
+  const values = unique([
+    ...stringList(metadata.supported_endpoint_types),
+    ...stringList(metadata.tags),
+    ...stringList(metadata.capabilities),
+  ].map((value) => value.toLowerCase()));
+  const caps: string[] = [];
+  for (const value of values) {
+    if (/(chat|completion|conversation)/.test(value)) caps.push("chat");
+    if (/(embedding|embed|retriev)/.test(value)) caps.push("embedding");
+    if (/(vision|image[_ -]?understanding)/.test(value)) caps.push("vision");
+    if (/(image).*(generation|generations|generate|create|variation|edit)/.test(value)) caps.push("image_generation");
+    if (/(video).*(generation|generations|generate|create|edit|i2v|t2v)/.test(value)) caps.push("video_generation");
+    if (/(tts|text[_ -]?to[_ -]?speech|speech).*(generation|synthesis|synth|speech)?/.test(value)) caps.push("tts");
+    if (/(stt|speech[_ -]?to[_ -]?text|transcrib|whisper)/.test(value)) caps.push("stt");
+    if (/(stream|streaming)/.test(value)) caps.push("stream");
+    if (/(tool|function[_ -]?call)/.test(value)) caps.push("function_calling");
+    if (/(json[_ -]?mode|structured[_ -]?output)/.test(value)) caps.push("json_mode");
+  }
+  return unique(caps);
+}
+
+function explicitRuntimeModality(metadata: Record<string, unknown>): ModelModality | null {
+  const value = String(metadata.model_type ?? metadata.modality ?? "").toLowerCase().trim();
+  if (!value || value === "multimodal" || value === "unknown") return null;
+  if (/(embedding|embed|retriev)/.test(value)) return "embedding";
+  if (/(image|img)/.test(value)) return "image";
+  if (/(video)/.test(value)) return "video";
+  if (/(audio|speech|tts|stt|transcrib)/.test(value)) return "audio";
+  if (/(chat|text|conversation|llm)/.test(value)) return "llm";
+  return null;
+}
+
+function modalityFromEndpointCaps(caps: string[]): ModelModality | null {
+  if (caps.includes("chat")) return "llm";
+  if (caps.includes("embedding")) return "embedding";
+  if (caps.includes("tts") || caps.includes("stt")) return "audio";
+  if (caps.includes("image_generation")) return "image";
+  if (caps.includes("video_generation")) return "video";
+  return null;
+}
+
+function inferFromRuntimeMetadata(
+  rawName: string,
+  metadata: Record<string, unknown> | undefined,
+): InferredCapability | null {
+  if (!metadata) return null;
+  const endpointCaps = runtimeEndpointCaps(metadata);
+  const explicit = explicitRuntimeModality(metadata);
+  const endpointModality = modalityFromEndpointCaps(endpointCaps);
+  const modality = explicit === "video" &&
+    (endpointCaps.includes("tts") || endpointCaps.includes("stt")) &&
+    !endpointCaps.includes("video_generation")
+    ? "audio"
+    : explicit ?? endpointModality;
+  if (!modality) return null;
+
+  if (modality === "llm" && !endpointCaps.includes("chat")) endpointCaps.push("chat");
+  if (modality === "embedding" && !endpointCaps.includes("embedding")) endpointCaps.push("embedding");
+  if (modality === "image" && !endpointCaps.includes("image_generation")) endpointCaps.push("image_generation");
+  if (modality === "video" && !endpointCaps.includes("video_generation")) endpointCaps.push("video_generation");
+
+  const confidence = 0.98;
+  const result: InferredCapability = {
+    inferredVendor: "Unknown",
+    inferredFamily: "",
+    inferredVersion: "",
+    modality,
+    confidence,
+    endpointCaps,
+    paramCaps: endpointCaps.filter((cap) => ["stream", "function_calling", "json_mode"].includes(cap)),
+    classificationSource: "runtime",
+    classificationConfidence: classificationConfidence(confidence),
+    classificationReason: explicit
+      ? `MemeFast model_type: ${String(metadata.model_type ?? metadata.modality)}`
+      : `MemeFast endpoint metadata: ${endpointCaps.join(", ")}`,
+  };
+
+  if (modality === "llm") {
+    result.llm = {
+      contextWindow: typeof metadata.context_window === "number" ? metadata.context_window : undefined,
+      supportsVision: endpointCaps.includes("vision"),
+      supportsFunctionCalling: endpointCaps.includes("function_calling"),
+    };
+  }
+  if (modality === "video") {
+    const asyncValue = metadata.requires_async ?? metadata.requiresAsync;
+    result.video = typeof asyncValue === "boolean" ? { requiresAsync: asyncValue } : {};
+  }
+  if (modality === "image") result.image = {};
+  if (modality === "audio") result.audio = {};
+  return result;
 }
 
 /**
@@ -218,6 +631,49 @@ export interface InferOptions {
  */
 function inferByRules(rawName: string): InferredCapability | null {
   const lower = rawName.toLowerCase();
+
+  const namedResult = inferFromModelNameRules(rawName);
+  if (namedResult) return namedResult;
+
+  // Embedding 模型识别必须早于通用文本/LLM兜底。
+  if (/(embedding|embed|bge-|e5-|voyage-)/.test(lower)) {
+    return {
+      inferredVendor: "Unknown",
+      inferredFamily: "embedding",
+      inferredVersion: "",
+      modality: "embedding",
+      confidence: 0.9,
+      endpointCaps: ["embedding"],
+      paramCaps: [],
+      classificationSource: "keyword",
+      classificationConfidence: "high",
+      classificationReason: "strong embedding model-name rule",
+    };
+  }
+
+  // 音频规则必须早于 kling 等视频厂商关键词。
+  if (lower.includes("whisper") || lower.includes("audio") || lower.includes("tts") || lower.includes("speech")) {
+    let vendor = "Unknown";
+    let family = "";
+
+    if (lower.includes("whisper")) {
+      vendor = "OpenAI";
+      family = "whisper";
+    }
+
+    return {
+      inferredVendor: vendor,
+      inferredFamily: family,
+      modality: "audio",
+      confidence: 0.8,
+      endpointCaps: ["stt"],
+      paramCaps: [],
+      classificationSource: "keyword",
+      classificationConfidence: "medium",
+      classificationReason: "strong audio model-name rule",
+      audio: {},
+    };
+  }
 
   // Video 模型识别
   if (
@@ -268,11 +724,12 @@ function inferByRules(rawName: string): InferredCapability | null {
       inferredVersion: version,
       modality: "video",
       confidence: 0.9,
-      video: {
-        maxDurationSec: 10,
-        supportedResolutions: ["720p", "1080p"],
-        requiresAsync: true,
-      },
+      endpointCaps: ["video_generation"],
+      paramCaps: [],
+      classificationSource: "keyword",
+      classificationConfidence: "high",
+      classificationReason: "strong video model-name rule",
+      video: {},
     };
   }
 
@@ -311,32 +768,12 @@ function inferByRules(rawName: string): InferredCapability | null {
       inferredFamily: family,
       modality: "image",
       confidence: 0.85,
-      image: {
-        supportedSizes: ["512x512", "1024x1024"],
-        supportsInpainting: false,
-      },
-    };
-  }
-
-  // Audio 模型识别
-  if (lower.includes("whisper") || lower.includes("audio") || lower.includes("tts")) {
-    let vendor = "Unknown";
-    let family = "";
-
-    if (lower.includes("whisper")) {
-      vendor = "OpenAI";
-      family = "whisper";
-    }
-
-    return {
-      inferredVendor: vendor,
-      inferredFamily: family,
-      modality: "audio",
-      confidence: 0.8,
-      audio: {
-        supportedFormats: ["mp3", "wav"],
-        maxDurationSec: 300,
-      },
+      endpointCaps: ["image_generation"],
+      paramCaps: [],
+      classificationSource: "keyword",
+      classificationConfidence: "medium",
+      classificationReason: "strong image model-name rule",
+      image: {},
     };
   }
 
@@ -380,17 +817,19 @@ function inferByRules(rawName: string): InferredCapability | null {
     version = match ? match[1] : "";
   }
 
+  if (vendor === "Unknown") return null;
+
   return {
     inferredVendor: vendor,
     inferredFamily: family,
     inferredVersion: version,
     modality: "llm",
     confidence: 0.7,
-    llm: {
-      contextWindow: 128000,
-      supportsVision: false,
-      supportsFunctionCalling: true,
-    },
+    endpointCaps: ["chat"],
+    paramCaps: ["stream"],
+    classificationSource: "keyword",
+    classificationConfidence: "medium",
+    classificationReason: "strong LLM model-name rule",
   };
 }
 
@@ -401,9 +840,12 @@ function inferByRules(rawName: string): InferredCapability | null {
  */
 export async function inferModelCapability(
   rawName: string,
-  options: InferOptions = {},
+  options: ModelInferenceOptions = {},
 ): Promise<InferredCapability> {
-  const { schemaEndpointId } = options;
+  const { schemaEndpointId, runtimeMetadata, catalogModality } = options;
+
+  const runtimeResult = inferFromRuntimeMetadata(rawName, runtimeMetadata);
+  if (runtimeResult) return runtimeResult;
 
   // 1. 如果提供了 fal.ai schema，先尝试从中获取信息
   if (schemaEndpointId) {
@@ -412,12 +854,29 @@ export async function inferModelCapability(
       if (schema) {
         const result = convertSchemaToCapability(schema);
         if (result.confidence >= 0.9) {
-          return result;
+          return {
+            ...result,
+            classificationSource: "schema",
+            classificationConfidence: classificationConfidence(result.confidence),
+            classificationReason: `confirmed fal.ai Schema: ${schemaEndpointId}`,
+          };
         }
       }
     } catch (err) {
       console.warn(`[infer] Failed to get schema ${schemaEndpointId}:`, err);
     }
+  }
+
+  if (catalogModality && catalogModality !== "unknown") {
+    return {
+      modality: catalogModality,
+      confidence: 0.75,
+      endpointCaps: [],
+      paramCaps: [],
+      classificationSource: "catalog",
+      classificationConfidence: "medium",
+      classificationReason: "OpenHub catalog fallback",
+    };
   }
 
   // 2. 尝试规则引擎
@@ -426,18 +885,18 @@ export async function inferModelCapability(
     return ruleResult;
   }
 
-  // 3. Fallback：默认为 LLM
+  // 3. 无证据时保持未知，不能把不确定模型伪装成 LLM
   return {
     inferredVendor: "Unknown",
     inferredFamily: "",
     inferredVersion: "",
-    modality: "llm",
-    confidence: 0.5,
-    llm: {
-      contextWindow: 128000,
-      supportsVision: false,
-      supportsFunctionCalling: false,
-    },
+    modality: "unknown",
+    confidence: 0.1,
+    endpointCaps: [],
+    paramCaps: [],
+    classificationSource: "unknown",
+    classificationConfidence: "low",
+    classificationReason: "no runtime, schema, catalog, or strong name evidence",
   };
 }
 
@@ -496,7 +955,7 @@ function convertSchemaToCapability(schema: any): InferredCapability {
   }
 
   // 2) 从 category 确定模态
-  let modality: "llm" | "video" | "image" | "audio" = "llm";
+  let modality: ModelModality = "unknown";
   let confidence = 0.95;
 
   if (
@@ -516,6 +975,8 @@ function convertSchemaToCapability(schema: any): InferredCapability {
     falCategory === "audio-to-text"
   ) {
     modality = "audio";
+  } else if (typeof falCategory === "string" && /embedding/i.test(falCategory)) {
+    modality = "embedding";
   }
 
   // 3) 构建基础结果（含 fal 元数据 + 完整 parameters）

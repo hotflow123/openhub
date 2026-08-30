@@ -12,6 +12,9 @@ interface Model {
   family: string | null;
   modelVersion: string | null;
   modality: string;
+  modalitySource: string;
+  modalityConfidence: string;
+  modalityReason: string | null;
   endpointCaps: string;
   paramCaps: string;
   catalogModelId: string | null;
@@ -30,6 +33,11 @@ interface Model {
   falPricing: string | null;
   falDescription: string | null;
   falSource: string | null;
+  videoContractSnapshot: string | null;
+  videoContractSource: string | null;
+  videoContractStatus: string | null;
+  videoContractReason: string | null;
+  videoContractSyncedAt: Date | null;
   // 视频参数
   videoDurationEnum: string | null;
   videoAspectRatios: string | null;
@@ -162,6 +170,33 @@ function labelStatus(status: string) {
   )[status] ?? status;
 }
 
+function labelModalitySource(source: string) {
+  return (
+    {
+      manual: "人工",
+      runtime: "MemeFast 原生",
+      schema: "Schema",
+      catalog: "目录",
+      keyword: "名称规则",
+      unknown: "未确认",
+    } as Record<string, string>
+  )[source] ?? source;
+}
+
+function labelCatalogStatus(model: Model) {
+  if (model.vendor || model.family || model.modality !== "unknown" || parseList(model.endpointCaps).length > 0) {
+    return "已识别，目录未覆盖";
+  }
+  return "未识别";
+}
+
+function labelSchemaStatus(model: Model) {
+  if (model.vendor || model.family || model.modality !== "unknown" || parseList(model.endpointCaps).length > 0) {
+    return "已识别，Schema未关联";
+  }
+  return "未识别";
+}
+
 // 根据 modality 和 endpointCaps 渲染单元格内容
 function ModelLimits({ model }: { model: Model }) {
   const caps = parseList(model.endpointCaps);
@@ -242,8 +277,9 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
   const referenceCaps = extractReferenceCaps(model);
   const isVideo = caps.includes("video_generation") || model.modality === "video";
   const schemaConfirmed = model.schemaMatchStatus === "confirmed";
+  const schemaCandidate = model.schemaMatchStatus === "candidate";
   const params: ParsedParameters[] = (() => {
-    if (!schemaConfirmed || !model.falParametersSnapshot) return [];
+    if ((!schemaConfirmed && !schemaCandidate) || !model.falParametersSnapshot) return [];
     try {
       return JSON.parse(model.falParametersSnapshot);
     } catch {
@@ -308,8 +344,16 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
                   {cap}
                 </span>
               ))}
+              <span className="badge" style={{ fontSize: 10 }}>
+                {labelModalitySource(model.modalitySource)} · {model.modalityConfidence}
+              </span>
               {model.schemaMatchStatus === "confirmed" && (
                 <span className="badge badge-active" style={{ fontSize: 10 }}>Schema 映射已确认</span>
+              )}
+              {isVideo && (
+                <span className={`badge ${model.videoContractStatus === "confirmed" ? "badge-active" : "badge-neutral"}`} style={{ fontSize: 10 }}>
+                  视频契约：{model.videoContractStatus ?? "未验证"}
+                </span>
               )}
               {model.schemaMatchStatus === "candidate" && (
                 <span className="badge" style={{ fontSize: 10, background: "rgba(251,191,36,0.15)", color: "#fbbf24" }}>Schema 待复核</span>
@@ -485,8 +529,13 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
           {params.length > 0 && (
             <div style={{ marginBottom: 16 }}>
               <h4 style={{ margin: "0 0 10px", fontSize: 13, color: "#94a3b8" }}>
-                fal.ai Parameters 完整列表 ({params.length} 个)
+                {schemaConfirmed ? "fal.ai Parameters 完整列表" : "fal.ai Parameters 参数建议（未确认）"} ({params.length} 个)
               </h4>
+              {schemaCandidate && (
+                <div style={{ marginBottom: 10, padding: "8px 10px", borderRadius: 6, background: "rgba(251,191,36,0.1)", color: "#fbbf24", fontSize: 11 }}>
+                  这些参数来自模型身份候选，仅供补全参考；未进入运行时调用合同。
+                </div>
+              )}
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                 <thead>
                   <tr style={{ background: "rgba(255,255,255,0.04)", borderBottom: "1px solid var(--border-color, #3a3a4a)" }}>
@@ -557,7 +606,7 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
           {/* 没有 fal 快照时 */}
           {!params.length && !isVideo && (
             <div style={{ textAlign: "center", padding: 32, color: "#64748b", fontSize: 13 }}>
-              该模型未匹配 fal.ai Schema，暂无 parameters 快照。
+              {schemaCandidate ? "该模型只有 Schema 候选，暂无参数建议。" : "该模型未匹配 fal.ai Schema，暂无 parameters 快照。"}
             </div>
           )}
 
@@ -574,7 +623,7 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
                     </div>
                   </>
                 ) : (
-                  <span style={{ color: "#64748b" }}>未匹配</span>
+                  <span style={{ color: "#64748b" }}>{labelCatalogStatus(model)}</span>
                 )}
                 <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 4 }}>
                   映射确认不等于上游站点已实测兼容。
@@ -596,7 +645,7 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
                     )}
                   </>
                 ) : (
-                  <span style={{ color: "#64748b" }}>未匹配</span>
+                  <span style={{ color: "#64748b" }}>{labelSchemaStatus(model)}</span>
                 )}
               </div>
             </div>
@@ -723,6 +772,9 @@ export default function ModelsPage() {
                   <td>{m.siteName ?? m.siteId}</td>
                   <td>
                     <span className="badge badge-neutral">{m.modality}</span>
+                    <small className="cell-sub">
+                      {labelModalitySource(m.modalitySource)} · {m.modalityConfidence}
+                    </small>
                     <div className="chip-list">
                       {caps.slice(0, 4).map((cap) => (
                         <span className="chip" key={cap}>
@@ -746,7 +798,7 @@ export default function ModelsPage() {
                         </small>
                       </>
                     ) : (
-                      <span className="muted">未匹配</span>
+                      <span className="muted">{labelCatalogStatus(m)}</span>
                     )}
                   </td>
                   <td>
@@ -761,7 +813,7 @@ export default function ModelsPage() {
                         {m.schemaMatchReason && <small className="cell-sub">{m.schemaMatchReason}</small>}
                       </>
                     ) : (
-                      <span className="muted">未匹配</span>
+                      <span className="muted">{labelSchemaStatus(m)}</span>
                     )}
                   </td>
                   <td>
@@ -1195,7 +1247,8 @@ function EditModel({
               <option value="image">图像</option>
               <option value="video">视频</option>
               <option value="audio">音频</option>
-              <option value="embedding">嵌入</option>
+            <option value="embedding">嵌入</option>
+            <option value="unknown">待复核</option>
             </select>
           </Field>
           <Field label="状态">

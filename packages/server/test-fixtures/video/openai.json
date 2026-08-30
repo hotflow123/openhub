@@ -1,0 +1,39 @@
+{
+  "submitRequest": {
+    "model": "video-variant",
+    "prompt": "A quiet ocean at sunrise",
+    "duration": 5,
+    "aspect_ratio": "16:9",
+    "resolution": "720p"
+  },
+  "submitResponse": {
+    "id": "openai_task_1",
+    "status": "queued"
+  },
+  "queryResponses": [
+    {
+      "id": "openai_task_1",
+      "status": "running"
+    },
+    {
+      "id": "openai_task_1",
+      "status": "succeeded",
+      "result": {
+        "video_url": "https://example.test/videos/openai.mp4",
+        "duration": 5,
+        "width": 1280,
+        "height": 720,
+        "ratio": "16:9",
+        "resolution": "720p"
+      }
+    }
+  ],
+  "statusMap": {
+    "queued": "pending",
+    "running": "processing",
+    "succeeded": "completed",
+    "failed": "failed",
+    "cancelled": "failed"
+  },
+  "resultPathDescription": "result.video_url"
+}

@@ -23,14 +23,14 @@ export async function refreshCatalogMappings(): Promise<CatalogRefreshResult> {
   let schemaMatched = 0;
 
   for (const site of allSites) {
-    // 1. 匹配 model_catalog（身份目录）
+    // 1. 匹配 fal.ai Schema（参数结构）
+    const schemaResult = await matchSchemasForSite(site.id);
+    schemaMatched += schemaResult.matched;
+
+    // 2. 匹配 model_catalog（身份目录）
     const matchResult = await matchModelsForSite(site.id);
     matched += matchResult.matched;
     unmatched += matchResult.unmatched;
-
-    // 2. 匹配 fal.ai Schema（参数结构）
-    const schemaResult = await matchSchemasForSite(site.id);
-    schemaMatched += schemaResult.matched;
   }
 
   return { aliases, sites: allSites.length, matched, unmatched, schemaMatched };

@@ -40,7 +40,7 @@ async function checkSchemaStatus() {
     .limit(10);
   
   for (const s of samples) {
-    console.log(`${s.endpointId} | ${s.modality} | ${s.vendor}/${s.family}`);
+    console.log(`${s.endpointId} | ${s.modality} | ${s.falModelId ?? "unknown model"}`);
   }
   
   // 检查视频模型
@@ -53,7 +53,7 @@ async function checkSchemaStatus() {
     .limit(20);
   
   for (const v of videoModels) {
-    console.log(`${v.endpointId} | ${v.vendor}/${v.family}`);
+    console.log(`${v.endpointId} | ${v.falModelId ?? "unknown model"}`);
   }
 }
 

@@ -19,6 +19,21 @@
 import { eq } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { modelSchemaCatalog, modelSchemaAlias, models } from "../../db/schema/index.js";
+import {
+  normalize,
+  rankModelCandidates,
+  type ModelIdentityCandidate,
+} from "@openhub/catalog/matcher";
+
+export interface SchemaCatalogCandidate {
+  endpointId: string;
+  title: string;
+  modality: string;
+  pricing: string | null;
+  parameters: string | null;
+  falCategory: string | null;
+  falSource: string | null;
+}
 
 export interface SchemaMatchResult {
   /** fal.ai 验证后的 endpointId（如 "bytedance/seedance-2.5/text-to-video"）*/
@@ -51,6 +66,11 @@ export interface SchemaMatchResult {
   aliasSource: string;
 }
 
+export interface SchemaMatchOptions {
+  modality?: string | null;
+  candidates?: readonly SchemaCatalogCandidate[];
+}
+
 /**
  * Fal snapshots describe a specific endpoint, not merely a similarly named
  * upstream model. Keep candidates visible for review, but never leave their
@@ -76,35 +96,8 @@ function clearUnconfirmedSchemaCapabilities() {
   };
 }
 
-/** 归一化：lowercase + 去掉 _/- 分隔符 + 压缩空格 */
-function normalize(s: string): string {
-  return s.toLowerCase().trim().replace(/[_\-\/]/g, " ").replace(/\s+/g, " ");
-}
-
-/**
- * 将原始模型名匹配到 fal.ai Schema
- * @param rawName 站点原始模型名（如 "doubao-seedance-2-0", "kling-video-v2-5", "wanx-pro"）
- */
-export async function matchSchema(rawName: string): Promise<SchemaMatchResult | null> {
-  const normalized = normalize(rawName);
-
-  // Step 1: 归一化精确匹配
-  const [aliasRow] = await db
-    .select({
-      endpointId: modelSchemaAlias.endpointId,
-      aliasType: modelSchemaAlias.aliasType,
-      alias: modelSchemaAlias.alias,
-      source: modelSchemaAlias.source,
-    })
-    .from(modelSchemaAlias)
-    .where(eq(modelSchemaAlias.normalized, normalized))
-    .orderBy(modelSchemaAlias.priority, modelSchemaAlias.id)
-    .limit(1);
-
-  if (!aliasRow) return null;
-
-  // Step 2: 获取 Schema 明细
-  const [schemaRow] = await db
+export async function loadSchemaCandidates(): Promise<SchemaCatalogCandidate[]> {
+  return db
     .select({
       endpointId: modelSchemaCatalog.endpointId,
       title: modelSchemaCatalog.title,
@@ -115,46 +108,127 @@ export async function matchSchema(rawName: string): Promise<SchemaMatchResult | 
       falSource: modelSchemaCatalog.falSource,
     })
     .from(modelSchemaCatalog)
-    .where(eq(modelSchemaCatalog.endpointId, aliasRow.endpointId))
-    .limit(1);
+    .where(eq(modelSchemaCatalog.status, "ok"));
+}
 
-  if (!schemaRow) return null;
+function identityCandidate(row: SchemaCatalogCandidate): ModelIdentityCandidate {
+  return {
+    id: row.endpointId,
+    name: row.title,
+    family: row.falCategory,
+    modality: row.modality,
+  };
+}
 
-  let parameters: SchemaMatchResult["parameters"] = [];
-  if (schemaRow.parameters && typeof schemaRow.parameters === "string") {
-    try {
-      parameters = JSON.parse(schemaRow.parameters);
-    } catch {
-      parameters = [];
-    }
+function parseParameters(value: string | null): SchemaMatchResult["parameters"] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
   }
+}
 
-  const manuallyCurated = aliasRow.source !== "fal-ai" || aliasRow.aliasType === "manual";
-  const exactEndpoint =
-    aliasRow.source === "fal-ai" &&
-    normalize(aliasRow.alias) === normalize(schemaRow.endpointId);
-
+function buildSchemaMatch(
+  schemaRow: SchemaCatalogCandidate,
+  metadata: {
+    aliasType: string;
+    aliasSource: string;
+    confidence: SchemaMatchResult["confidence"];
+    reason: string;
+  },
+): SchemaMatchResult {
   return {
     endpointId: schemaRow.endpointId,
-    aliasType: aliasRow.aliasType,
+    aliasType: metadata.aliasType,
     title: schemaRow.title,
     modality: schemaRow.modality,
     pricing: schemaRow.pricing,
-    parameters,
+    parameters: parseParameters(schemaRow.parameters),
     falCategory: schemaRow.falCategory,
     falSource: schemaRow.falSource,
-    // An alias is useful matching evidence, but only the explicit wizard
-    // selection has a model-level audit record. Do not auto-confirm a model
-    // just because its name resembles a Fal endpoint.
     status: "candidate",
-    confidence: manuallyCurated || exactEndpoint ? "high" : "medium",
-    reason: manuallyCurated
-      ? "curated_alias_needs_review"
-      : exactEndpoint
-        ? "exact_endpoint_alias_needs_review"
-        : "exact_generated_alias_needs_review",
-    aliasSource: aliasRow.source,
+    confidence: metadata.confidence,
+    reason: metadata.reason,
+    aliasSource: metadata.aliasSource,
   };
+}
+
+function modalityMatches(queryModality: string | null | undefined, schema: SchemaCatalogCandidate): boolean {
+  if (!queryModality || queryModality === "unknown") return true;
+  return schema.modality === queryModality;
+}
+
+/**
+ * 将原始模型名匹配到 fal.ai Schema。
+ *
+ * Exact aliases remain the first choice. If no alias exists, the same generic
+ * token/version matcher used by the model catalog supplies a reviewable
+ * candidate instead of requiring one alias per upstream naming convention.
+ */
+export async function matchSchema(
+  rawName: string,
+  options: SchemaMatchOptions = {},
+): Promise<SchemaMatchResult | null> {
+  const normalized = normalize(rawName);
+  const candidates = options.candidates ?? (await loadSchemaCandidates());
+  const rowsByEndpoint = new Map(candidates.map((row) => [row.endpointId, row]));
+
+  // Step 1: 归一化精确匹配
+  const aliasRows = await db
+    .select({
+      endpointId: modelSchemaAlias.endpointId,
+      aliasType: modelSchemaAlias.aliasType,
+      alias: modelSchemaAlias.alias,
+      source: modelSchemaAlias.source,
+    })
+    .from(modelSchemaAlias)
+    .where(eq(modelSchemaAlias.normalized, normalized))
+    .orderBy(modelSchemaAlias.priority, modelSchemaAlias.id)
+    .limit(20);
+
+  for (const aliasRow of aliasRows) {
+    const schemaRow = rowsByEndpoint.get(aliasRow.endpointId);
+    if (!schemaRow || !modalityMatches(options.modality, schemaRow)) continue;
+
+    const manuallyCurated = aliasRow.source !== "fal-ai" || aliasRow.aliasType === "manual";
+    const exactEndpoint =
+      aliasRow.source === "fal-ai" && normalize(aliasRow.alias) === normalize(schemaRow.endpointId);
+    return buildSchemaMatch(schemaRow, {
+      aliasType: aliasRow.aliasType,
+      aliasSource: aliasRow.source,
+      confidence: manuallyCurated || exactEndpoint ? "high" : "medium",
+      reason: manuallyCurated
+        ? "curated_alias_needs_review"
+        : exactEndpoint
+          ? "exact_endpoint_alias_needs_review"
+          : "exact_generated_alias_needs_review",
+    });
+  }
+
+  // Step 2: generic model identity match
+  const ranked = rankModelCandidates(
+    rawName,
+    candidates.map(identityCandidate),
+    { modality: options.modality },
+  );
+  const [best, next] = ranked;
+  if (!best || best.score < 0.58) return null;
+
+  const margin = next ? best.score - next.score : best.score;
+  const confidence: SchemaMatchResult["confidence"] =
+    best.score >= 0.78 ? "high" : best.score >= 0.62 ? "medium" : "low";
+  const reason = margin < 0.06 ? "model_identity_match_ambiguous" : "model_identity_match";
+  const schemaRow = rowsByEndpoint.get(best.candidate.id);
+  return schemaRow
+    ? buildSchemaMatch(schemaRow, {
+        aliasType: "inference",
+        aliasSource: "model-identity",
+        confidence,
+        reason,
+      })
+    : null;
 }
 
 /**
@@ -164,6 +238,7 @@ export async function matchSchema(rawName: string): Promise<SchemaMatchResult | 
 export async function matchSchemasForSite(
   siteId: string,
 ): Promise<{ matched: number; total: number }> {
+  const schemaCandidates = await loadSchemaCandidates();
   const siteModels = await db
     .select({
       id: models.id,
@@ -182,7 +257,23 @@ export async function matchSchemasForSite(
 
   for (const model of siteModels) {
     // 只对非 LLM 模型匹配 Schema（LLM 用 model_catalog）
-    if (model.modality === "llm" || model.modality === "embedding") continue;
+    if (model.modality === "llm" || model.modality === "embedding") {
+      if (model.schemaMatchStatus !== "confirmed") {
+        await db
+          .update(models)
+          .set({
+            ...clearUnconfirmedSchemaCapabilities(),
+            schemaEndpointId: null,
+            schemaMatchSource: null,
+            schemaMatchStatus: "unmatched",
+            schemaMatchConfidence: null,
+            schemaMatchReason: "schema_not_applicable_to_modality",
+            updatedAt: new Date(),
+          })
+          .where(eq(models.id, model.id));
+      }
+      continue;
+    }
 
     // Only an auditable wizard selection is an approved mapping. Historical
     // manual writes are candidates because their correctness is unknown.
@@ -219,13 +310,19 @@ export async function matchSchemasForSite(
       continue;
     }
 
-    const result = await matchSchema(model.rawName);
+    const result = await matchSchema(model.rawName, {
+      modality: model.modality,
+      candidates: schemaCandidates,
+    });
 
     if (result) {
       await db
         .update(models)
         .set({
           ...(result.status === "confirmed" ? {} : clearUnconfirmedSchemaCapabilities()),
+          ...(result.status === "confirmed"
+            ? {}
+            : { falParametersSnapshot: result.parameters.length ? JSON.stringify(result.parameters) : null }),
           schemaEndpointId: result.endpointId,
           schemaMatchSource: result.aliasType,
           schemaMatchStatus: result.status,
