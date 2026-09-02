@@ -11,6 +11,8 @@ interface Model {
   vendor: string | null;
   family: string | null;
   modelVersion: string | null;
+  adapterId: string | null;
+  adapterSource: string | null;
   modality: string;
   modalitySource: string;
   modalityConfidence: string;
@@ -65,6 +67,35 @@ interface Model {
   status: string;
   statusReason: string | null;
   siteName: string | null;
+  identityStatus: "recognized" | "ambiguous" | "unmatched";
+  identitySource: string | null;
+  contractStatus: "confirmed" | "candidate" | "partial" | "unverified";
+  parameterCoverage: "complete" | "partial" | "unknown";
+  executionStatus: "ready" | "needs_review" | "unavailable";
+  runtimeStatus: "verified" | "unverified" | "failed";
+  runtimeProbes?: Array<{
+    capability: string;
+    mode: "safe" | "full";
+    status: string;
+    httpStatus: number | null;
+    upstreamCode: string | null;
+    message: string | null;
+    requestId: string | null;
+    retryAfter: string | null;
+    latencyMs: number | null;
+    checkedAt: Date;
+  }>;
+  parameterTemplates?: Array<{
+    id: string;
+    source: string;
+    sourceModelId: string;
+    sourceCollection: string;
+    operation: string;
+    matchStatus: string;
+    matchConfidence: string;
+    matchReason: string | null;
+    fieldMapping: string | null;
+  }>;
 }
 
 interface ParsedParameters {
@@ -170,6 +201,27 @@ function labelStatus(status: string) {
   )[status] ?? status;
 }
 
+function labelExecutionStatus(status: Model["executionStatus"], runtimeStatus: Model["runtimeStatus"]) {
+  if (status === "ready") return runtimeStatus === "verified" ? "可执行 · 已验证" : "可执行 · 未实测";
+  return ({ needs_review: "待补全", unavailable: "不可用" } as const)[status];
+}
+
+function executionBadgeClass(status: Model["executionStatus"]) {
+  return status === "ready" ? "badge-active" : status === "unavailable" ? "badge-error" : "badge-neutral";
+}
+
+function probeLabel(status: string) {
+  return ({
+    available: "最近可用",
+    unknown: "已发现，未证明可调用",
+    temporary_failure: "临时失败",
+    forbidden: "无权限",
+    unsupported: "不支持或不存在",
+    request_invalid: "探测参数无效",
+    contract_mismatch: "响应不符合契约",
+  } as Record<string, string>)[status] ?? status;
+}
+
 function labelModalitySource(source: string) {
   return (
     {
@@ -184,16 +236,16 @@ function labelModalitySource(source: string) {
 }
 
 function labelCatalogStatus(model: Model) {
-  if (model.vendor || model.family || model.modality !== "unknown" || parseList(model.endpointCaps).length > 0) {
-    return "已识别，目录未覆盖";
-  }
+  if (model.identityStatus === "recognized") return "已识别";
+  if (model.catalogModelId) return "候选，待确认";
+  if (model.vendor || model.family || model.modality !== "unknown" || parseList(model.endpointCaps).length > 0) return "有线索，待确认";
   return "未识别";
 }
 
 function labelSchemaStatus(model: Model) {
-  if (model.vendor || model.family || model.modality !== "unknown" || parseList(model.endpointCaps).length > 0) {
-    return "已识别，Schema未关联";
-  }
+  if (model.schemaMatchStatus === "confirmed") return "模板已应用";
+  if (model.schemaEndpointId) return "模板候选，待确认";
+  if (model.vendor || model.family || model.modality !== "unknown" || parseList(model.endpointCaps).length > 0) return "有线索，Schema 未关联";
   return "未识别";
 }
 
@@ -273,6 +325,10 @@ function ModelLimits({ model }: { model: Model }) {
 
 // 双击展开的详情模态框
 function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => void }) {
+  const templatesQuery = useQuery({
+    queryKey: ["model-parameter-templates", model.id],
+    queryFn: () => api.get<{ data: NonNullable<Model["parameterTemplates"]> }>(`/admin/models/${model.id}/parameter-templates`),
+  });
   const caps = parseList(model.endpointCaps);
   const referenceCaps = extractReferenceCaps(model);
   const isVideo = caps.includes("video_generation") || model.modality === "video";
@@ -339,6 +395,9 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
               <span className={`badge badge-${model.modality === "video" ? "active" : model.modality === "image" ? "neutral" : "disabled"}`}>
                 {model.modality}
               </span>
+              <span className={`badge ${executionBadgeClass(model.executionStatus)}`} style={{ fontSize: 10 }}>
+                执行：{labelExecutionStatus(model.executionStatus, model.runtimeStatus)}
+              </span>
               {caps.map((cap) => (
                 <span key={cap} className="badge badge-neutral" style={{ fontSize: 10 }}>
                   {cap}
@@ -348,7 +407,7 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
                 {labelModalitySource(model.modalitySource)} · {model.modalityConfidence}
               </span>
               {model.schemaMatchStatus === "confirmed" && (
-                <span className="badge badge-active" style={{ fontSize: 10 }}>Schema 映射已确认</span>
+                <span className="badge badge-active" style={{ fontSize: 10 }}>模板已应用</span>
               )}
               {isVideo && (
                 <span className={`badge ${model.videoContractStatus === "confirmed" ? "badge-active" : "badge-neutral"}`} style={{ fontSize: 10 }}>
@@ -356,7 +415,7 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
                 </span>
               )}
               {model.schemaMatchStatus === "candidate" && (
-                <span className="badge" style={{ fontSize: 10, background: "rgba(251,191,36,0.15)", color: "#fbbf24" }}>Schema 待复核</span>
+                <span className="badge" style={{ fontSize: 10, background: "rgba(251,191,36,0.15)", color: "#fbbf24" }}>模板待复核</span>
               )}
               {!model.schemaMatchStatus && model.schemaEndpointId && (
                 <span className="badge badge-active" style={{ fontSize: 10 }}>已匹配 Schema</span>
@@ -611,6 +670,16 @@ function ModelDetailModal({ model, onClose }: { model: Model; onClose: () => voi
           )}
 
           {/* 匹配信息 */}
+          <div style={{ marginTop: 12, padding: 12, background: "rgba(255,255,255,0.04)", borderRadius: 8 }}>
+            <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6 }}>参数模板来源</div>
+            {(templatesQuery.data?.data ?? []).length === 0 ? <span style={{ color: "#64748b", fontSize: 12 }}>暂无候选模板</span> : (templatesQuery.data?.data ?? []).map((template) => (
+              <div key={template.id} style={{ fontSize: 12, marginBottom: 4 }}>
+                <code>{template.source}</code> · {template.operation} · {template.matchStatus} · {template.matchConfidence}
+                <div style={{ color: "#94a3b8", fontSize: 10 }}>{template.sourceModelId} · {template.sourceCollection}{template.matchReason ? ` · ${template.matchReason}` : ""}</div>
+              </div>
+            ))}
+          </div>
+
           <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 8, padding: 12 }}>
               <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>OpenRouter Catalog 匹配</div>
@@ -665,6 +734,12 @@ export default function ModelsPage() {
   const [editing, setEditing] = useState<Model | null>(null);
   const [detailModel, setDetailModel] = useState<Model | null>(null);
   const [filter, setFilter] = useState("");
+  const [vendorFilter, setVendorFilter] = useState("all");
+  const [modalityFilter, setModalityFilter] = useState("all");
+  const [identityFilter, setIdentityFilter] = useState("all");
+  const [contractFilter, setContractFilter] = useState("all");
+  const [parameterFilter, setParameterFilter] = useState("all");
+  const [runtimeFilter, setRuntimeFilter] = useState("all");
   const siteId = new URLSearchParams(window.location.search).get("site") ?? "";
 
   const models = useQuery({
@@ -675,7 +750,17 @@ export default function ModelsPage() {
       ),
   });
 
-  const rows = (models.data?.data ?? []).filter((m) =>
+  const allModels = models.data?.data ?? [];
+  const vendors = Array.from(new Set(allModels.map((m) => m.vendor ?? ""))).sort((a, b) =>
+    (a || "未知厂商").localeCompare(b || "未知厂商"),
+  );
+  const rows = allModels.filter((m) =>
+    (vendorFilter === "all" || (vendorFilter === "unknown" ? !m.vendor : m.vendor === vendorFilter)) &&
+    (modalityFilter === "all" || m.modality === modalityFilter) &&
+    (identityFilter === "all" || m.identityStatus === identityFilter) &&
+    (contractFilter === "all" || m.contractStatus === contractFilter) &&
+    (parameterFilter === "all" || m.parameterCoverage === parameterFilter) &&
+    (runtimeFilter === "all" || m.executionStatus === runtimeFilter) &&
     `${m.rawName} ${m.displayName ?? ""} ${m.vendor ?? ""} ${m.siteName ?? ""} ${m.schemaEndpointId ?? ""} ${m.catalogModelId ?? ""}`
       .toLowerCase()
       .includes(filter.toLowerCase()),
@@ -684,6 +769,15 @@ export default function ModelsPage() {
   const probe = useMutation({
     mutationFn: (id: string) => api.post(`/admin/probes/${id}`, { mode: "safe" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["models"] }),
+  });
+  const batchProbe = useMutation({
+    mutationFn: () => api.post("/admin/probes/batch", { mode: "safe", limit: 20 }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["models"] }),
+  });
+  const fullProbe = useMutation({
+    mutationFn: (id: string) => api.post(`/admin/probes/${id}`, { mode: "full", confirm: true }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["models"] }),
+    onError: (error: any) => window.alert(error?.message ?? "实际验证失败"),
   });
 
   const remove = useMutation({
@@ -710,14 +804,10 @@ export default function ModelsPage() {
         <div className="header-actions">
           <button
             className="btn"
-            disabled={probe.isPending}
-            onClick={() =>
-              api.post("/admin/probes/batch", { mode: "safe", limit: 20 }).then(() =>
-                qc.invalidateQueries({ queryKey: ["models"] }),
-              )
-            }
+            disabled={batchProbe.isPending}
+            onClick={() => batchProbe.mutate()}
           >
-            {probe.isPending ? "探测中..." : "批量探测"}
+            {batchProbe.isPending ? "检查中..." : "批量检查"}
           </button>
           <Link className="btn btn-primary" to="/admin/sites">
             管理站点
@@ -732,6 +822,58 @@ export default function ModelsPage() {
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
+        <select
+          className="input"
+          aria-label="按一级厂商筛选"
+          value={vendorFilter}
+          onChange={(e) => setVendorFilter(e.target.value)}
+        >
+          <option value="all">全部厂商</option>
+          {vendors.map((vendor) => (
+            <option value={vendor || "unknown"} key={vendor || "unknown"}>
+              {vendor || "未知厂商"}
+            </option>
+          ))}
+        </select>
+        <select
+          className="input"
+          aria-label="按二级模态筛选"
+          value={modalityFilter}
+          onChange={(e) => setModalityFilter(e.target.value)}
+        >
+          <option value="all">全部模态</option>
+          <option value="llm">LLM</option>
+          <option value="image">图片</option>
+          <option value="video">视频</option>
+          <option value="audio">音频</option>
+          <option value="embedding">Embedding</option>
+          <option value="unknown">未知</option>
+        </select>
+        <select className="input" aria-label="按身份状态筛选" value={identityFilter} onChange={(e) => setIdentityFilter(e.target.value)}>
+          <option value="all">全部身份</option>
+          <option value="recognized">已识别</option>
+          <option value="ambiguous">有歧义</option>
+          <option value="unmatched">未匹配</option>
+        </select>
+        <select className="input" aria-label="按契约状态筛选" value={contractFilter} onChange={(e) => setContractFilter(e.target.value)}>
+          <option value="all">全部契约</option>
+          <option value="confirmed">已确认</option>
+          <option value="candidate">候选</option>
+          <option value="partial">部分</option>
+          <option value="unverified">未验证</option>
+        </select>
+        <select className="input" aria-label="按参数覆盖度筛选" value={parameterFilter} onChange={(e) => setParameterFilter(e.target.value)}>
+          <option value="all">全部参数</option>
+          <option value="complete">完整</option>
+          <option value="partial">部分</option>
+          <option value="unknown">未知</option>
+        </select>
+        <select className="input" aria-label="按运行状态筛选" value={runtimeFilter} onChange={(e) => setRuntimeFilter(e.target.value)}>
+          <option value="all">全部运行</option>
+          <option value="ready">可执行</option>
+          <option value="needs_review">待确认</option>
+          <option value="unavailable">不可用</option>
+        </select>
         <span className="toolbar-meta">
           共 {rows.length} 个模型
         </span>
@@ -772,6 +914,7 @@ export default function ModelsPage() {
                   <td>{m.siteName ?? m.siteId}</td>
                   <td>
                     <span className="badge badge-neutral">{m.modality}</span>
+                    <small className="cell-sub">适配器 {m.adapterId ?? "—"}{m.adapterSource === "manual" ? " · 人工" : ""}</small>
                     <small className="cell-sub">
                       {labelModalitySource(m.modalitySource)} · {m.modalityConfidence}
                     </small>
@@ -825,6 +968,19 @@ export default function ModelsPage() {
                     >
                       {labelStatus(m.status)}
                     </span>
+                    <small className="cell-sub">
+                      执行：<span className={`badge ${executionBadgeClass(m.executionStatus)}`} style={{ fontSize: 10 }}>
+                        {labelExecutionStatus(m.executionStatus, m.runtimeStatus)}
+                      </span>
+                    </small>
+                    <small className="cell-sub">
+                      身份 {m.identityStatus} · 契约 {m.contractStatus} · 参数 {m.parameterCoverage}
+                    </small>
+                    {m.runtimeProbes?.slice(0, 2).map((probe) => (
+                      <small className="cell-sub" key={`${probe.capability}-${probe.checkedAt}`}>
+                        {probe.capability}：{probeLabel(probe.status)}{probe.latencyMs != null ? ` · ${probe.latencyMs}ms` : ""}
+                      </small>
+                    ))}
                     {m.capsOverridden === 1 && (
                       <small className="cell-sub">已确认</small>
                     )}
@@ -839,8 +995,21 @@ export default function ModelsPage() {
                         disabled={probe.isPending}
                         onClick={() => probe.mutate(m.id)}
                       >
-                        探测
+                        列表检查
                       </button>
+                      {["llm", "image", "audio", "video"].includes(m.modality) && (
+                        <button
+                          className="btn btn-small"
+                          disabled={fullProbe.isPending}
+                          onClick={() => {
+                            if (window.confirm("将向供应商发送一次最小实际请求，可能产生费用或创建任务。继续吗？")) {
+                              fullProbe.mutate(m.id);
+                            }
+                          }}
+                        >
+                          {fullProbe.isPending ? "验证中..." : "实际验证"}
+                        </button>
+                      )}
                       <Link className="btn btn-small" to={`/admin/wizard/${m.id}`}>
                         向导
                       </Link>

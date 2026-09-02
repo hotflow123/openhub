@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { memefastAdapter } from "./src/engine/adapters/memefast";
 import { bootstrapAdapters } from "./src/engine/index";
-import { resolveAdapterForModel, validateAdapterCapability } from "./src/engine/adapter";
+import { providerV1Url, resolveAdapterForModel, validateAdapterCapability } from "./src/engine/adapter";
+
+test("does not duplicate /v1 when a site URL already includes it", () => {
+  assert.equal(providerV1Url("https://example.test", "/v1/models"), "https://example.test/v1/models");
+  assert.equal(providerV1Url("https://example.test/v1", "/v1/models"), "https://example.test/v1/models");
+  assert.equal(providerV1Url("https://example.test/v1/", "v1/chat/completions"), "https://example.test/v1/chat/completions");
+});
 
 test("site adapter wins unless a model has a manual adapter override", () => {
   bootstrapAdapters();

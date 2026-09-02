@@ -3,9 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22 <23"
+  },
   "scripts": {
     "dev": "tsx watch --env-file=.env src/index.ts",
     "start": "tsx --env-file=.env src/index.ts",
+    "db:backup": "node scripts/backup-db.cjs",
     "db:push": "drizzle-kit push --force",
     "db:migrate": "drizzle-kit migrate",
     "db:migrate:param-limits": "node tools/migrate-param-limits.cjs",
@@ -16,12 +20,18 @@
     "catalog:init": "tsx --env-file=.env scripts/init.ts",
     "init": "tsx --env-file=.env scripts/init.ts",
     "sync:fal": "tsx src/scripts/sync-fal-encyclopedia.ts",
-    "test": "tsx --test test-model-contract.ts test-param-mapper.ts test-memefast-adapter.ts test-memefast-modality.ts test-model-profile-sync.ts test-model-matching.ts test-video-contract.ts test-video-adapters.ts",
+    "adapter:index": "tsx scripts/adapter-index.ts generate",
+    "adapter:index:check": "tsx scripts/adapter-index.ts check",
+    "adapter-index:generate": "tsx scripts/adapter-index.ts generate",
+    "adapter-index:check": "tsx scripts/adapter-index.ts check",
+    "test": "tsx --test test-model-contract.ts test-probe-classification.ts test-param-mapper.ts test-parameter-template.ts test-memefast-adapter.ts test-memefast-modality.ts test-model-profile-sync.ts test-model-matching.ts test-video-contract.ts test-video-adapters.ts test-adapter-sdk.ts test-adapter-registry.ts test-adapter-index.ts test-schema-template-compatibility.ts test-template-closed-loop.ts test-template-route-closed-loop.ts",
+    "test:adapters": "tsx --test test-adapter-sdk.ts test-adapter-registry.ts test-adapter-index.ts test-adapter-security.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "hono": "^4.5.0",
     "@hono/node-server": "^1.13.0",
+    "@openhub/adapter-sdk": "workspace:*",
     "drizzle-orm": "^0.36.0",
     "better-sqlite3": "^11.2.0",
     "zod": "^3.23.0",

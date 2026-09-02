@@ -18,10 +18,7 @@ import {
   type VideoTaskStatus,
   type VideoResult,
 } from "../adapter";
-
-function baseUrl(url: string): string {
-  return url.replace(/\/$/, "");
-}
+import { providerV1Url } from "../adapter";
 
 /**
  * OpenAI 兼容适配器
@@ -56,7 +53,7 @@ export const openaiAdapter: Adapter = {
   },
 
   async forwardChat(req: ChatRequest, ctx: ForwardContext): Promise<ChatResponse> {
-    const url = `${baseUrl(ctx.targetUrl)}/v1/chat/completions`;
+    const url = providerV1Url(ctx.targetUrl, "/v1/chat/completions");
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -72,7 +69,7 @@ export const openaiAdapter: Adapter = {
   },
 
   async forwardChatStream(req: ChatRequest, ctx: ForwardContext): Promise<Response> {
-    const url = `${baseUrl(ctx.targetUrl)}/v1/chat/completions`;
+    const url = providerV1Url(ctx.targetUrl, "/v1/chat/completions");
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -91,7 +88,7 @@ export const openaiAdapter: Adapter = {
     req: EmbeddingRequest,
     ctx: ForwardContext,
   ): Promise<EmbeddingResponse> {
-    const url = `${baseUrl(ctx.targetUrl)}/v1/embeddings`;
+    const url = providerV1Url(ctx.targetUrl, "/v1/embeddings");
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -108,7 +105,7 @@ export const openaiAdapter: Adapter = {
 
   async healthCheck(ctx: ForwardContext): Promise<boolean> {
     try {
-      const url = `${baseUrl(ctx.targetUrl)}/v1/models`;
+      const url = providerV1Url(ctx.targetUrl, "/v1/models");
       const response = await fetch(url, {
         headers: { Authorization: `Bearer ${ctx.apiKey}` },
         signal: AbortSignal.timeout(5000),
@@ -125,7 +122,7 @@ export const openaiAdapter: Adapter = {
     req: ImageGenerationRequest,
     ctx: ForwardContext,
   ): Promise<ImageResponse> {
-    const url = `${baseUrl(ctx.targetUrl)}/v1/images/generations`;
+    const url = providerV1Url(ctx.targetUrl, "/v1/images/generations");
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -147,7 +144,7 @@ export const openaiAdapter: Adapter = {
     const form = new FormData();
     appendMultipartFields(form, req as unknown as Record<string, unknown>);
 
-    const url = `${baseUrl(ctx.targetUrl)}/v1/images/edits`;
+    const url = providerV1Url(ctx.targetUrl, "/v1/images/edits");
     const response = await fetch(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${ctx.apiKey}` },
@@ -166,7 +163,7 @@ export const openaiAdapter: Adapter = {
     const form = new FormData();
     appendMultipartFields(form, req as unknown as Record<string, unknown>);
 
-    const url = `${baseUrl(ctx.targetUrl)}/v1/images/variations`;
+    const url = providerV1Url(ctx.targetUrl, "/v1/images/variations");
     const response = await fetch(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${ctx.apiKey}` },
@@ -184,7 +181,7 @@ export const openaiAdapter: Adapter = {
     req: AudioSpeechRequest,
     ctx: ForwardContext,
   ): Promise<ArrayBuffer> {
-    const url = `${baseUrl(ctx.targetUrl)}/v1/audio/speech`;
+    const url = providerV1Url(ctx.targetUrl, "/v1/audio/speech");
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -206,7 +203,7 @@ export const openaiAdapter: Adapter = {
     const form = new FormData();
     appendMultipartFields(form, req as unknown as Record<string, unknown>);
 
-    const url = `${baseUrl(ctx.targetUrl)}/v1/audio/transcriptions`;
+    const url = providerV1Url(ctx.targetUrl, "/v1/audio/transcriptions");
     const response = await fetch(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${ctx.apiKey}` },
@@ -236,7 +233,7 @@ export const openaiAdapter: Adapter = {
         "openaiAdapter: submitVideoTask requires adapterConfig.video.endpoint (e.g. 'videos')",
       );
     }
-    const url = `${baseUrl(ctx.targetUrl)}/v1/${endpoint}`;
+    const url = providerV1Url(ctx.targetUrl, `/v1/${endpoint.replace(/^\/+/, "")}`);
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -269,7 +266,7 @@ export const openaiAdapter: Adapter = {
         "openaiAdapter: queryVideoTask requires adapterConfig.video.endpoint",
       );
     }
-    const url = `${baseUrl(ctx.targetUrl)}/v1/${endpoint}/${encodeURIComponent(siteTaskId)}`;
+    const url = providerV1Url(ctx.targetUrl, `/v1/${endpoint.replace(/^\/+/, "")}/${encodeURIComponent(siteTaskId)}`);
     const response = await fetch(url, {
       headers: { Authorization: `Bearer ${ctx.apiKey}` },
     });

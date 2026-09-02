@@ -1,5 +1,5 @@
 {
-  "version": "7",
+  "version": "8",
   "dialect": "sqlite",
   "entries": [
     {
@@ -56,6 +56,34 @@
       "version": "7",
       "when": 1788000000000,
       "tag": "0007_add-video-contract",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "8",
+      "when": 1788080000000,
+      "tag": "0008_multimodal_adapter_runtime",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "8",
+      "when": 1788170400000,
+      "tag": "0009_model_capability_probes",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "8",
+      "when": 1788174000000,
+      "tag": "0010_evidence_gated_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "8",
+      "when": 1788177600000,
+      "tag": "0011_model_parameter_templates",
       "breakpoints": true
     }
   ]

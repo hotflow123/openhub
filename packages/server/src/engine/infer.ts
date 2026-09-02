@@ -252,6 +252,33 @@ interface ModelNameRule {
 
 const MODEL_NAME_RULES: readonly ModelNameRule[] = [
   {
+    pattern: /(?:^|[/_-])text[/_-]?embedding(?:[/_.-]|\d|$)/,
+    vendor: "OpenAI",
+    family: "text-embedding",
+    modality: "embedding",
+    confidence: 0.95,
+    endpointCaps: ["embedding"],
+    reason: "known text embedding family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])gemini[/_-]+embedding(?:[/_.-]|\d|$)/,
+    vendor: "Google",
+    family: "gemini-embedding",
+    modality: "embedding",
+    confidence: 0.95,
+    endpointCaps: ["embedding"],
+    reason: "known Gemini embedding family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])bge[/_-]?[^/]*rerank(?:er)?(?:[/_.-]|$)/,
+    vendor: "BAAI",
+    family: "bge-reranker",
+    modality: "embedding",
+    confidence: 0.95,
+    endpointCaps: ["embedding"],
+    reason: "known BGE reranker family name rule",
+  },
+  {
     pattern: /(?:^|[/_-])(?:bce|bge|e5|voyage)[^/]*?(?:rerank|reranker|embedding|embed)(?:[/_.-]|$)|(?:^|[/])(?:rerank|reranker)(?:[/_.-]|$)/,
     vendor: "Unknown",
     family: "embedding",
@@ -259,6 +286,51 @@ const MODEL_NAME_RULES: readonly ModelNameRule[] = [
     confidence: 0.92,
     endpointCaps: ["embedding"],
     reason: "embedding and reranker family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])minimax[/_-]+hailuo(?:[/_.-]|\d|$)/,
+    vendor: "MiniMax",
+    family: "hailuo",
+    modality: "video",
+    confidence: 0.95,
+    endpointCaps: ["video_generation"],
+    reason: "known Hailuo video family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])speech[-_]?(?:02|2[._-](?:6|8))(?:[/_.-]|$)/,
+    vendor: "MiniMax",
+    family: "speech",
+    modality: "audio",
+    confidence: 0.95,
+    endpointCaps: ["tts"],
+    reason: "known MiniMax Speech family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])wan(?:[/_-]|\d)[^/]*(?:i2v|t2v|r2v|video)/,
+    vendor: "Alibaba",
+    family: "wan",
+    modality: "video",
+    confidence: 0.95,
+    endpointCaps: ["video_generation"],
+    reason: "known Wan video family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])wan(?:[/_-]|\d)[^/]*(?:image|t2i)/,
+    vendor: "Alibaba",
+    family: "wan",
+    modality: "image",
+    confidence: 0.95,
+    endpointCaps: ["image_generation"],
+    reason: "known Wan image family name rule",
+  },
+  {
+    pattern: /(?:^|[/_-])z[/_-]?image(?:[/_.-]|\d|$)/,
+    vendor: "Alibaba",
+    family: "z-image",
+    modality: "image",
+    confidence: 0.95,
+    endpointCaps: ["image_generation"],
+    reason: "known Z-Image family name rule",
   },
   {
     pattern: /(?:^|[/_-])qwen[^/]*?(?:rerank|reranker)(?:[/_.-]|$)/,
@@ -325,7 +397,7 @@ const MODEL_NAME_RULES: readonly ModelNameRule[] = [
   },
   {
     pattern: /(?:^|[/_-])happyhorse(?:[/_-]|$)/,
-    vendor: "Unknown",
+    vendor: "Alibaba",
     family: "happyhorse",
     modality: "video",
     confidence: 0.9,
@@ -496,6 +568,10 @@ const MODEL_NAME_RULES: readonly ModelNameRule[] = [
   },
 ];
 
+const NAMESPACE_VENDOR_NAMES: Record<string, string> = {
+  "netease-youdao": "NetEase Youdao",
+};
+
 function stringList(value: unknown): string[] {
   if (typeof value === "string") return value.trim() ? [value.trim()] : [];
   if (!Array.isArray(value)) return [];
@@ -512,8 +588,9 @@ function inferFromModelNameRules(rawName: string): InferredCapability | null {
   if (!rule) return null;
 
   const identity = parseModelIdentity(rawName);
+  const namespaceVendor = identity.namespace ? NAMESPACE_VENDOR_NAMES[identity.namespace] : undefined;
   return {
-    inferredVendor: rule.vendor,
+    inferredVendor: rule.vendor === "Unknown" ? namespaceVendor ?? rule.vendor : rule.vendor,
     inferredFamily: rule.family,
     inferredVersion: identity.version ?? "",
     modality: rule.modality,
@@ -530,6 +607,22 @@ function classificationConfidence(value: number): "high" | "medium" | "low" {
   if (value >= 0.9) return "high";
   if (value >= 0.7) return "medium";
   return "low";
+}
+
+function strengthenNameIdentity(result: InferredCapability): InferredCapability {
+  if (
+    result.classificationSource !== "keyword"
+    || !result.inferredVendor
+    || result.inferredVendor === "Unknown"
+    || !result.inferredFamily
+  ) return result;
+
+  return {
+    ...result,
+    confidence: Math.max(result.confidence, 0.9),
+    classificationConfidence: "high",
+    classificationReason: "model_name_identity_match",
+  };
 }
 
 function runtimeEndpointCaps(metadata: Record<string, unknown>): string[] {
@@ -659,6 +752,12 @@ function inferByRules(rawName: string): InferredCapability | null {
     if (lower.includes("whisper")) {
       vendor = "OpenAI";
       family = "whisper";
+    } else if (lower.includes("gpt")) {
+      vendor = "OpenAI";
+      family = "gpt";
+    } else if (lower.includes("tts")) {
+      vendor = "OpenAI";
+      family = "tts";
     }
 
     return {
@@ -683,7 +782,8 @@ function inferByRules(rawName: string): InferredCapability | null {
     lower.includes("sora") ||
     lower.includes("veo") ||
     lower.includes("imagine-video") ||
-    lower.match(/\bh3video\b/)
+    lower.match(/\bh3video\b/) ||
+    lower.match(/\b(?:i2v|t2v|r2v)\b/)
   ) {
     let vendor = "Unknown";
     let family = "";
@@ -716,6 +816,9 @@ function inferByRules(rawName: string): InferredCapability | null {
       family = "grok-imagine-video";
       const match = rawName.match(/imagine[-_]video[-_]?([\d.]+)/i);
       version = match ? match[1] : "";
+    } else if (lower.includes("grok")) {
+      vendor = "xAI";
+      family = "grok";
     }
 
     return {
@@ -844,8 +947,23 @@ export async function inferModelCapability(
 ): Promise<InferredCapability> {
   const { schemaEndpointId, runtimeMetadata, catalogModality } = options;
 
+  const nameResult = inferByRules(rawName);
+  const strengthenedNameResult = nameResult ? strengthenNameIdentity(nameResult) : null;
   const runtimeResult = inferFromRuntimeMetadata(rawName, runtimeMetadata);
-  if (runtimeResult) return runtimeResult;
+  if (runtimeResult) {
+    if (!strengthenedNameResult) return runtimeResult;
+    return {
+      ...runtimeResult,
+      inferredVendor: runtimeResult.inferredVendor && runtimeResult.inferredVendor !== "Unknown"
+        ? runtimeResult.inferredVendor
+        : strengthenedNameResult.inferredVendor,
+      inferredFamily: runtimeResult.inferredFamily || strengthenedNameResult.inferredFamily,
+      inferredVersion: runtimeResult.inferredVersion || strengthenedNameResult.inferredVersion,
+      classificationReason: strengthenedNameResult.inferredVendor && strengthenedNameResult.inferredFamily
+        ? "runtime_modality_with_model_name_identity"
+        : runtimeResult.classificationReason,
+    };
+  }
 
   // 1. 如果提供了 fal.ai schema，先尝试从中获取信息
   if (schemaEndpointId) {
@@ -880,7 +998,7 @@ export async function inferModelCapability(
   }
 
   // 2. 尝试规则引擎
-  const ruleResult = inferByRules(rawName);
+  const ruleResult = strengthenedNameResult;
   if (ruleResult && ruleResult.confidence >= 0.7) {
     return ruleResult;
   }

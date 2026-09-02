@@ -18,6 +18,14 @@ importers:
         specifier: ^5.5.0
         version: 5.9.3
 
+  packages/adapter-sdk: {}
+
+  packages/client:
+    dependencies:
+      '@openhub/adapter-sdk':
+        specifier: workspace:*
+        version: link:../adapter-sdk
+
   packages/catalog:
     dependencies:
       nanoid:
@@ -48,6 +56,9 @@ importers:
       '@hono/node-server':
         specifier: ^1.13.0
         version: 1.19.17(hono@4.13.2)
+      '@openhub/adapter-sdk':
+        specifier: workspace:*
+        version: link:../adapter-sdk
       '@openhub/catalog':
         specifier: workspace:*
         version: link:../catalog

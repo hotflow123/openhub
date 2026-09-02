@@ -10,7 +10,7 @@ export interface ModelIdentityCandidate {
 export interface MatcherDb {
   findCatalogById(id: string): Promise<{ id: string } | undefined>;
   findCatalogByNormalized(normalized: string): Promise<{ id: string } | undefined>;
-  findCatalogAlias(alias: string): Promise<{ catalogId: string } | undefined>;
+  findCatalogAlias(alias: string): Promise<{ catalogId: string; aliasType?: string } | undefined>;
   findCatalogCandidates(): Promise<readonly ModelIdentityCandidate[]>;
 }
 
@@ -400,6 +400,7 @@ export async function matchModel(
   const alias = await db.findCatalogAlias(normalized);
   if (alias) {
     const result = directMatch(alias.catalogId, "alias", 0.9, candidatesById, options.modality);
+    if (result && alias.aliasType) result.aliasType = alias.aliasType;
     if (result) return result;
   }
 

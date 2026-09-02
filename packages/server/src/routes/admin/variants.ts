@@ -3,7 +3,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db } from "../../db/index";
-import { variants, models, sites, keys } from "../../db/schema/index";
+import { variants, models, sites, keys, modelParameterTemplates } from "../../db/schema/index";
 import { writeAudit } from "../../lib/audit";
 import {
   getAdapter,
@@ -14,8 +14,12 @@ import {
 import {
   validateVariantLimits,
   validateParameterLimitsAgainstModel,
+  validateVariantParameterPolicy,
+  modelEvidenceState,
   type ModelParameterLimits,
 } from "../../lib/model-contract";
+import { evaluateParameterTemplateCompatibility } from "../../engine/catalog/parameter-template-matcher";
+import { getProviderAdapterRegistration } from "../../engine/adapter-manifest";
 import { withAdminAuth } from "./_with-auth";
 
 const variantsRoute = new Hono();
@@ -25,7 +29,9 @@ const VariantSchema = z.object({
   name: z.string().min(1).max(64).optional(),
   description: z.string().nullable().optional(),
   modelId: z.string().min(1).optional(),
+  parameterTemplateId: z.string().nullable().optional(),
   adapterConfig: z.record(z.string(), z.unknown()).nullable().optional(),
+  paramDefaults: z.record(z.string(), z.unknown()).nullable().optional(),
   paramOverrides: z.record(z.string(), z.unknown()).nullable().optional(),
   paramBlocked: z.array(z.string()).nullable().optional(),
   fieldMapping: z.record(z.string(), z.string()).nullable().optional(),
@@ -76,6 +82,8 @@ async function validateVariantWrite(
   modelId: string,
   adapterConfig: Record<string, unknown> | undefined,
   paramLimits: ModelParameterLimits | undefined,
+  paramOverrides: Record<string, unknown> | null | undefined,
+  fieldMapping: Record<string, string> | null | undefined,
   limits: {
     maxReferenceImages?: number | null;
     maxReferenceVideos?: number | null;
@@ -112,9 +120,21 @@ async function validateVariantWrite(
   if (adapterConfigError) {
     return { error: adapterConfigError, status: 400 as const, code: "adapter_config_invalid" };
   }
+  const evidence = modelEvidenceState(model);
+  if (evidence.executionStatus === "unavailable" || evidence.contractStatus !== "confirmed") {
+    return {
+      error: `Model is not ready: identity=${evidence.identityStatus}, contract=${evidence.contractStatus}, execution=${evidence.executionStatus}`,
+      status: 409 as const,
+      code: "contract_unconfirmed",
+    };
+  }
   const paramLimitsError = validateParameterLimitsAgainstModel(paramLimits ?? {}, model);
   if (paramLimitsError) {
     return { error: paramLimitsError, status: 400 as const, code: "model_constraint_invalid" };
+  }
+  const policyError = validateVariantParameterPolicy(fieldMapping, paramOverrides, model);
+  if (policyError) {
+    return { error: policyError, status: 400 as const, code: "model_constraint_invalid" };
   }
 
   const constraintError = validateVariantLimits({
@@ -130,16 +150,77 @@ async function validateVariantWrite(
   return { model, site, adapterId };
 }
 
+async function validateParameterTemplate(modelId: string, templateId: string | null | undefined) {
+  if (templateId === undefined || templateId === null) return null;
+  const [template] = await db.select({ id: modelParameterTemplates.id, modelId: modelParameterTemplates.modelId, matchStatus: modelParameterTemplates.matchStatus })
+    .from(modelParameterTemplates).where(eq(modelParameterTemplates.id, templateId)).limit(1);
+  if (!template || template.modelId !== modelId) return { message: "Parameter template does not belong to model", code: "parameter_template_invalid" };
+  if (template.matchStatus !== "applied") return { message: "Parameter template must be applied to a Variant", code: "parameter_template_variant_required" };
+  return null;
+}
+
 variantsRoute.get("/variants", async (c) => {
   const rows = await db.select().from(variants);
   return c.json({ data: rows });
+});
+
+variantsRoute.post("/variants/:id/parameter-template", async (c) => {
+  const variantId = c.req.param("id");
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = z.object({ templateId: z.string().min(1) }).safeParse(body);
+  if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+  try {
+    const result = db.transaction((tx) => {
+      const [variant] = tx.select().from(variants).where(eq(variants.id, variantId)).limit(1).all();
+      if (!variant) throw new Error("variant_not_found");
+      const [model] = tx.select().from(models).where(eq(models.id, variant.modelId)).limit(1).all();
+      if (!model) throw new Error("model_not_found");
+      const [templateRow] = tx.select().from(modelParameterTemplates).where(eq(modelParameterTemplates.id, parsed.data.templateId)).limit(1).all();
+      if (!templateRow || templateRow.modelId !== model.id) throw new Error("parameter_template_invalid");
+      if (templateRow.matchStatus === "incompatible" || templateRow.matchStatus === "conflict") throw new Error("parameter_template_incompatible");
+
+      let template: unknown;
+      try { template = JSON.parse(templateRow.templateSnapshot); } catch { throw new Error("parameter_template_invalid"); }
+      const adapterId = normalizeAdapterId(model.adapterId);
+      const registration = adapterId ? getProviderAdapterRegistration(adapterId) ?? null : null;
+      const adapterConfig = fromStoredObject(variant.adapterConfig);
+      const compatibility = evaluateParameterTemplateCompatibility({
+        model,
+        template: template as never,
+        registration,
+        operation: templateRow.operation,
+        templateConfirmed: true,
+        adapterConfig,
+      });
+      if (compatibility.decision !== "confirmed") {
+        const error = new Error(compatibility.decision === "incompatible" ? "parameter_template_incompatible" : "parameter_template_requires_review");
+        (error as Error & { details?: unknown }).details = compatibility;
+        throw error;
+      }
+
+      const fieldMapping = JSON.stringify(compatibility.fieldMapping);
+      tx.update(modelParameterTemplates).set({ matchStatus: "applied", fieldMapping, matchReason: compatibility.reasons.join(","), updatedAt: new Date() }).where(eq(modelParameterTemplates.id, templateRow.id)).run();
+      const [updated] = tx.update(variants).set({ parameterTemplateId: templateRow.id, fieldMapping, updatedAt: new Date() }).where(eq(variants.id, variantId)).returning().all();
+      return { variant: updated, templateId: templateRow.id, status: "applied" as const, compatibility };
+    });
+    await writeAudit({ actor: "admin", action: "variant.parameter_template.apply", resourceType: "variant", resourceId: variantId, payload: JSON.stringify({ templateId: parsed.data.templateId }) });
+    return c.json({ data: result });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "parameter_template_invalid";
+    const status = code === "variant_not_found" || code === "model_not_found" ? 404 : code === "parameter_template_requires_review" || code === "parameter_template_incompatible" ? 409 : 400;
+    const details = error && typeof error === "object" && "details" in error ? (error as { details?: unknown }).details : undefined;
+    return c.json({ error: { message: code, code, ...(details ? { details } : {}) } }, status as 400 | 404 | 409);
+  }
 });
 
 variantsRoute.post("/variants", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const parsed = VariantSchema.extend({ name: z.string().min(1).max(64), modelId: z.string().min(1) }).safeParse(body);
   if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-  const validation = await validateVariantWrite(parsed.data.modelId, parsed.data.adapterConfig ?? undefined, parsed.data.paramLimits ?? undefined, {
+  const templateError = await validateParameterTemplate(parsed.data.modelId, parsed.data.parameterTemplateId);
+  if (templateError) return c.json({ error: templateError }, 400);
+  const validation = await validateVariantWrite(parsed.data.modelId, parsed.data.adapterConfig ?? undefined, parsed.data.paramLimits ?? undefined, parsed.data.paramOverrides, parsed.data.fieldMapping, {
     maxReferenceImages: parsed.data.maxReferenceImages,
     maxReferenceVideos: parsed.data.maxReferenceVideos,
     maxReferenceAudios: parsed.data.maxReferenceAudios,
@@ -151,7 +232,7 @@ variantsRoute.post("/variants", async (c) => {
   const [existing] = await db.select({ id: variants.id }).from(variants).where(eq(variants.name, parsed.data.name)).limit(1);
   if (existing) return c.json({ error: { message: `Variant name '${parsed.data.name}' already exists`, code: "variant_name_taken" } }, 409);
   const id = nanoid();
-  await db.insert(variants).values({ id, name: parsed.data.name, modelId: parsed.data.modelId, description: parsed.data.description ?? null, adapterConfig: toStored(parsed.data.adapterConfig), paramOverrides: toStored(parsed.data.paramOverrides), paramBlocked: toStored(parsed.data.paramBlocked), fieldMapping: toStored(parsed.data.fieldMapping), paramLimits: toStored(parsed.data.paramLimits), maxContext: parsed.data.maxContext ?? null, maxOutput: parsed.data.maxOutput ?? null, maxImages: parsed.data.maxImages ?? null, maxReferenceImages: parsed.data.maxReferenceImages ?? null, maxReferenceVideos: parsed.data.maxReferenceVideos ?? null, maxReferenceAudios: parsed.data.maxReferenceAudios ?? null, maxDuration: parsed.data.maxDuration ?? null, maxAudioLen: parsed.data.maxAudioLen ?? null, isPublic: parsed.data.isPublic ?? 1 });
+  await db.insert(variants).values({ id, name: parsed.data.name, modelId: parsed.data.modelId, parameterTemplateId: parsed.data.parameterTemplateId ?? null, description: parsed.data.description ?? null, adapterConfig: toStored(parsed.data.adapterConfig), adapterConfigStatus: "valid", adapterConfigReason: "validated_on_variant_write", adapterConfigValidatedAt: new Date(), paramDefaults: toStored(parsed.data.paramDefaults), paramOverrides: toStored(parsed.data.paramOverrides), paramBlocked: toStored(parsed.data.paramBlocked), fieldMapping: toStored(parsed.data.fieldMapping), paramLimits: toStored(parsed.data.paramLimits), maxContext: parsed.data.maxContext ?? null, maxOutput: parsed.data.maxOutput ?? null, maxImages: parsed.data.maxImages ?? null, maxReferenceImages: parsed.data.maxReferenceImages ?? null, maxReferenceVideos: parsed.data.maxReferenceVideos ?? null, maxReferenceAudios: parsed.data.maxReferenceAudios ?? null, maxDuration: parsed.data.maxDuration ?? null, maxAudioLen: parsed.data.maxAudioLen ?? null, isPublic: parsed.data.isPublic ?? 1 });
   await writeAudit({ actor: "admin", action: "variant.create", resourceType: "variant", resourceId: id, payload: JSON.stringify({ name: parsed.data.name, modelId: parsed.data.modelId }) });
   return c.json({ data: { id, ...parsed.data } }, 201);
 });
@@ -164,6 +245,8 @@ variantsRoute.patch("/variants/:id", async (c) => {
   const [existing] = await db.select().from(variants).where(eq(variants.id, id)).limit(1);
   if (!existing) return c.json({ error: "Not found" }, 404);
   const targetModelId = parsed.data.modelId ?? existing.modelId;
+  const templateError = await validateParameterTemplate(targetModelId, parsed.data.parameterTemplateId !== undefined ? parsed.data.parameterTemplateId : existing.parameterTemplateId);
+  if (templateError) return c.json({ error: templateError }, 400);
   const validation = await validateVariantWrite(
     targetModelId,
     parsed.data.adapterConfig !== undefined
@@ -172,6 +255,12 @@ variantsRoute.patch("/variants/:id", async (c) => {
     parsed.data.paramLimits !== undefined
       ? parsed.data.paramLimits ?? undefined
       : fromStoredParamLimits(existing.paramLimits),
+    parsed.data.paramOverrides !== undefined
+      ? parsed.data.paramOverrides
+      : fromStoredObject(existing.paramOverrides),
+    parsed.data.fieldMapping !== undefined
+      ? parsed.data.fieldMapping
+      : fromStoredObject(existing.fieldMapping) as Record<string, string> | undefined,
     {
       maxReferenceImages: parsed.data.maxReferenceImages !== undefined ? parsed.data.maxReferenceImages : existing.maxReferenceImages,
       maxReferenceVideos: parsed.data.maxReferenceVideos !== undefined ? parsed.data.maxReferenceVideos : existing.maxReferenceVideos,
@@ -183,8 +272,12 @@ variantsRoute.patch("/variants/:id", async (c) => {
     return c.json({ error: { message: validation.error, code: validation.code } }, validation.status);
   }
   const update: Record<string, unknown> = { updatedAt: new Date() };
-  for (const key of ["name", "description", "modelId", "maxContext", "maxOutput", "maxImages", "maxReferenceImages", "maxReferenceVideos", "maxReferenceAudios", "maxDuration", "maxAudioLen", "isPublic"] as const) if (parsed.data[key] !== undefined) update[key] = parsed.data[key];
+  update.adapterConfigStatus = "valid";
+  update.adapterConfigReason = "validated_on_variant_write";
+  update.adapterConfigValidatedAt = new Date();
+  for (const key of ["name", "description", "modelId", "parameterTemplateId", "maxContext", "maxOutput", "maxImages", "maxReferenceImages", "maxReferenceVideos", "maxReferenceAudios", "maxDuration", "maxAudioLen", "isPublic"] as const) if (parsed.data[key] !== undefined) update[key] = parsed.data[key];
   if (parsed.data.adapterConfig !== undefined) update.adapterConfig = toStored(parsed.data.adapterConfig);
+  if (parsed.data.paramDefaults !== undefined) update.paramDefaults = toStored(parsed.data.paramDefaults);
   if (parsed.data.paramOverrides !== undefined) update.paramOverrides = toStored(parsed.data.paramOverrides);
   if (parsed.data.paramBlocked !== undefined) update.paramBlocked = toStored(parsed.data.paramBlocked);
   if (parsed.data.fieldMapping !== undefined) update.fieldMapping = toStored(parsed.data.fieldMapping);

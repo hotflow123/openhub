@@ -4,7 +4,7 @@ import {
   forwardImageGeneration,
   forwardImageEdit,
   forwardImageVariation,
-  RouterError,
+  normalizeRouterError,
 } from "../router";
 import type {
   ImageGenerationRequest,
@@ -15,19 +15,16 @@ import type {
 const images = new Hono();
 images.use("/v1/images/*", authMiddleware);
 
-function errorResponse(status: number, message: string, code?: string) {
+function errorResponse(status: number, message: string, code?: string, details?: Record<string, unknown>) {
   return new Response(
-    JSON.stringify({ error: { message, type: "router_error", code } }),
+    JSON.stringify({ error: { message, type: "router_error", code, ...(details && Object.keys(details).length > 0 ? { details } : {}) } }),
     { status, headers: { "Content-Type": "application/json" } },
   );
 }
 
 function handleRouterError(err: unknown): Response {
-  if (err instanceof RouterError) {
-    return errorResponse(err.status, err.message, err.code);
-  }
-  const message = err instanceof Error ? err.message : String(err);
-  return errorResponse(502, message, "upstream_error");
+  const routerError = normalizeRouterError(err);
+  return errorResponse(routerError.status, routerError.message, routerError.code, routerError.details);
 }
 
 /**
@@ -44,7 +41,7 @@ images.post("/v1/images/generations", async (c) => {
   if (!body.model) return errorResponse(400, "Missing model (variant name)", "missing_model");
   if (!body.prompt) return errorResponse(400, "Missing prompt", "missing_prompt");
 
-  const access = checkVariantAccess(c, body.model);
+  const access = await checkVariantAccess(c, body.model);
   if (!access.ok) return errorResponse(access.status, (access.body as any).error.message, "variant_not_allowed");
 
   try {
@@ -75,7 +72,7 @@ images.post("/v1/images/edits", async (c) => {
   if (!imageField) return errorResponse(400, "Missing image", "missing_image");
   const maskField = form["mask"];
 
-  const access = checkVariantAccess(c, model);
+  const access = await checkVariantAccess(c, model);
   if (!access.ok) return errorResponse(access.status, (access.body as any).error.message, "variant_not_allowed");
 
   const req: ImageEditRequest = {
@@ -116,7 +113,7 @@ images.post("/v1/images/variations", async (c) => {
   const imageField = form["image"];
   if (!imageField) return errorResponse(400, "Missing image", "missing_image");
 
-  const access = checkVariantAccess(c, model);
+  const access = await checkVariantAccess(c, model);
   if (!access.ok) return errorResponse(access.status, (access.body as any).error.message, "variant_not_allowed");
 
   const req: ImageVariationRequest = {

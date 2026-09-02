@@ -68,9 +68,11 @@ export interface ParamMapperOutput {
 }
 
 export interface StoredVariantParamPolicy {
+  paramDefaults?: string | null;
   paramOverrides?: string | null;
   paramBlocked?: string | null;
   fieldMapping?: string | null;
+  parameterTemplateSnapshot?: string | null;
 }
 
 function parseStoredObject(raw: string | null | undefined): Record<string, unknown> {
@@ -106,8 +108,16 @@ export function mapStoredVariantParams(
   callerBody: Record<string, unknown>,
   variant: StoredVariantParamPolicy,
   knownFields: Iterable<string>,
-  options: { keepProviderOptions?: boolean } = {},
+  options: { keepProviderOptions?: boolean; paramDefaults?: Record<string, unknown> } = {},
 ): ParamMapperOutput {
+  let templateDefaults: Record<string, unknown> = {};
+  if (variant.parameterTemplateSnapshot) {
+    try {
+      const snapshot = JSON.parse(variant.parameterTemplateSnapshot) as { inputs?: Record<string, { default?: unknown }> };
+      for (const [name, field] of Object.entries(snapshot.inputs ?? {})) if (field && Object.prototype.hasOwnProperty.call(field, "default")) templateDefaults[name] = field.default;
+    } catch { /* invalid snapshots are ignored; database validation owns integrity */ }
+  }
+  const paramDefaults = parseStoredObject(variant.paramDefaults);
   const paramOverrides = parseStoredObject(variant.paramOverrides);
   const paramBlocked = parseStoredList(variant.paramBlocked);
   const fieldMapping = parseStoredObject(variant.fieldMapping) as Record<string, string>;
@@ -128,7 +138,10 @@ export function mapStoredVariantParams(
         ...knownFields,
         ...providerFields,
         ...mappedOverrideFields,
+        ...Object.keys(options.paramDefaults ?? {}),
+        ...Object.keys(templateDefaults),
       ])),
+      param_defaults: { ...templateDefaults, ...options.paramDefaults, ...paramDefaults },
       keepProviderOptions: options.keepProviderOptions,
     },
   });

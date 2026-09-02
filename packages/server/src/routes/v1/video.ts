@@ -10,12 +10,12 @@
 
 import { Hono } from "hono";
 import { eq, desc } from "drizzle-orm";
-import { authMiddleware } from "../../middleware/auth";
+import { authMiddleware, checkVariantAccess } from "../../middleware/auth";
 import { db } from "../../db/index";
 import { tasks } from "../../db/schema/index";
 import { createTask, getTask, parseTaskMeta, parseTaskResult } from "../../engine/tasks/service";
-import { validateModelRequest } from "../../lib/model-contract";
-import { resolveRoute, RouterError } from "../router";
+import { validateUrl } from "../../lib/ssrf";
+import { applyVariantParams, resolveRoute, RouterError } from "../router";
 
 const video = new Hono();
 video.use("/v1/video/*", authMiddleware);
@@ -58,6 +58,10 @@ video.post("/v1/video/generations", async (c) => {
 
   const model = String(body.model ?? "");
   if (!model) return errorResponse(400, "Missing model (variant name)", "missing_model");
+
+  const access = await checkVariantAccess(c, model);
+  if (!access.ok) return errorResponse(access.status, (access.body as any).error.message, "variant_not_allowed");
+
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
   if (!prompt && !hasTextContent(body.content)) return errorResponse(400, "Missing prompt or text content", "missing_prompt");
   const contentError = validateContent(body.content);
@@ -65,7 +69,7 @@ video.post("/v1/video/generations", async (c) => {
 
   let chain;
   try {
-    chain = await resolveRoute(model);
+    chain = await resolveRoute(model, "video.submit");
   } catch (err) {
     if (err instanceof RouterError) return errorResponse(err.status, err.message, err.code);
     throw err;
@@ -79,59 +83,38 @@ video.post("/v1/video/generations", async (c) => {
     );
   }
 
-  let fieldMapping: Record<string, string> = {};
   try {
-    const parsed = chain.variant.fieldMapping ? JSON.parse(chain.variant.fieldMapping) : {};
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      fieldMapping = parsed as Record<string, string>;
-    }
-  } catch {
-    return errorResponse(500, "Variant field_mapping is invalid JSON", "invalid_field_mapping");
-  }
-
-  let paramLimits: Record<string, string[]> = {};
-  try {
-    const parsed = chain.variant.paramLimits ? JSON.parse(chain.variant.paramLimits) : {};
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      for (const [field, values] of Object.entries(parsed as Record<string, unknown>)) {
-        if (Array.isArray(values) && values.every((value) => typeof value === "string")) {
-          paramLimits[field] = values as string[];
-        }
-      }
-    }
-  } catch {
-    return errorResponse(500, "Variant param_limits is invalid JSON", "invalid_param_limits");
-  }
-
-  const contractError = validateModelRequest(
-    body,
-    chain.model,
-    {
-      maxReferenceImages: chain.variant.maxReferenceImages,
-      maxReferenceVideos: chain.variant.maxReferenceVideos,
-      maxReferenceAudios: chain.variant.maxReferenceAudios,
-    },
-    fieldMapping,
-    paramLimits,
-  );
-  if (contractError) {
-    return errorResponse(400, contractError, "model_parameter_invalid");
+    applyVariantParams(chain, body, "video");
+  } catch (err) {
+    if (err instanceof RouterError) return errorResponse(err.status, err.message, err.code);
+    throw err;
   }
 
   const hubKey = c.get("hubKey");
 
-  const callbackUrl = typeof body.callback_url === "string" ? body.callback_url : undefined;
-  if (callbackUrl && !/^https:\/\//i.test(callbackUrl)) {
-    return errorResponse(400, "callback_url must be https://", "invalid_callback_url");
+  const callbackUrl = typeof body.callback_url === "string" ? body.callback_url.trim() : undefined;
+  if (callbackUrl) {
+    try {
+      await validateUrl(callbackUrl, { requireHttps: true });
+    } catch {
+      return errorResponse(400, "callback_url must be a public https URL", "invalid_callback_url");
+    }
   }
 
   // Persist the complete JSON request needed by the asynchronous worker.
   // Transport-only fields are excluded; the task GET endpoint redacts prompt/media fields.
   const { model: _requestedModel, callback_url: _callback, idempotency_key: _idempotency, ...requestParams } = body;
+  const variantConfig = chain.variant.adapterConfig ? JSON.parse(chain.variant.adapterConfig) as Record<string, unknown> : {};
+  const videoConfig = variantConfig.video && typeof variantConfig.video === "object" && !Array.isArray(variantConfig.video)
+    ? variantConfig.video as Record<string, unknown>
+    : {};
   const meta: Record<string, unknown> = {
     ...requestParams,
     model: chain.model.rawName,
     variant_id: chain.variant.id,
+    adapter_id: chain.adapter.id,
+    adapter_version: chain.model.adapterVersion,
+    ...(typeof videoConfig.protocol === "string" ? { protocol_id: videoConfig.protocol } : {}),
   };
 
   const idempotencyKey =

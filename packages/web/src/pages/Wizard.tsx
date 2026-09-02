@@ -2,6 +2,10 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../lib/api";
+import AdapterConfigForm, {
+  applyAdapterConfigDefaults,
+  type AdapterConfigSchema,
+} from "../components/AdapterConfigForm";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -42,7 +46,7 @@ interface Step1Data {
   siteName: string;
   siteStatus: string;
   siteAdapterId: string | null;
-  adapterOptions: Array<{ id: string; capabilities: string[] }>;
+  adapterOptions: Array<AdapterOption>;
   suggestedModality: Modality;
   currentFalSchema: string | null;
   schemaMatchStatus: string | null;
@@ -72,6 +76,7 @@ interface Step1Data {
     totalReferenceFiles: number | null;
     audioRequiresImageOrVideo: boolean;
   };
+  parameterTemplates?: Array<{ id: string; source: string; sourceModelId: string; operation: string; matchStatus: string; matchConfidence: string; matchReason: string | null }>;
   videoDurationEnum: string | null;
   videoAspectRatios: string | null;
   videoResolutions: string | null;
@@ -86,6 +91,15 @@ interface Step1Data {
     supportsStream: number;
     requiresAsync: number;
   };
+}
+
+interface AdapterOption {
+  id: string;
+  displayName?: string;
+  version?: string;
+  capabilities: string[];
+  configSchema?: AdapterConfigSchema;
+  status?: string;
 }
 
 interface VariantForm {
@@ -111,6 +125,7 @@ interface VariantForm {
   paramOverrides: Record<string, unknown>;
   paramBlocked: string[];
   fieldMapping: Record<string, string>;
+  parameterTemplateId: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -220,12 +235,13 @@ export default function WizardPage() {
     paramOverrides: {},
     paramBlocked: [],
     fieldMapping: {},
+    parameterTemplateId: "",
   });
 
   const [overridesJson, setOverridesJson] = useState("{}");
   const [blockedJson, setBlockedJson] = useState("[]");
   const [mappingJson, setMappingJson] = useState("{}");
-  const [adapterConfigJson, setAdapterConfigJson] = useState("{}");
+  const [adapterConfig, setAdapterConfig] = useState<Record<string, unknown>>({});
   const [error, setError] = useState("");
 
   // ── Data fetching ───────────────────────────────────────────────────────
@@ -244,6 +260,11 @@ export default function WizardPage() {
       params.set("limit", "30");
       return api.get<{ data: FalSchemaSummary[] }>(`/admin/catalog/schema?${params}`);
     },
+  });
+
+  const adaptersQuery = useQuery({
+    queryKey: ["adapters"],
+    queryFn: () => api.get<{ data: AdapterOption[] }>("/admin/adapters"),
   });
 
   // Apply fal schema to model
@@ -300,10 +321,13 @@ export default function WizardPage() {
 
   // ── Derived: current model data ─────────────────────────────────────────
   const modelData = modelQuery.data?.data;
-  const adapterOptions = modelData?.adapterOptions ?? [];
+  const adapterOptions: AdapterOption[] = adaptersQuery.data?.data?.length
+    ? adaptersQuery.data.data
+    : modelData?.adapterOptions ?? [];
   const suggestedAdapterId =
     canonicalAdapterId(modelData?.prefill?.adapterId ?? modelData?.siteAdapterId ?? adapterOptions[0]?.id);
   const selectedAdapterId = form.adapterId || suggestedAdapterId;
+  const selectedAdapter = adapterOptions.find((adapter) => adapter.id === selectedAdapterId);
   const currentParams = modelData?.falParametersSnapshot
     ? parseParams(modelData.falParametersSnapshot)
     : [];
@@ -386,7 +410,6 @@ export default function WizardPage() {
       const parsedOverrides = JSON.parse(overridesJson);
       const parsedBlocked = JSON.parse(blockedJson);
       const parsedMapping = JSON.parse(mappingJson);
-      const parsedAdapterConfig = JSON.parse(adapterConfigJson);
       const paramLimits: Record<string, string[]> = {
         ...(form.selectedDurationSecs.length > 0 ? { duration: form.selectedDurationSecs.map(String) } : {}),
         ...(form.selectedAspectRatios.length > 0 ? { aspect_ratio: form.selectedAspectRatios } : {}),
@@ -395,7 +418,6 @@ export default function WizardPage() {
       if (Array.isArray(parsedOverrides)) throw new Error("覆盖规则必须是对象");
       if (!Array.isArray(parsedBlocked)) throw new Error("禁止参数必须是数组");
       if (!parsedMapping || typeof parsedMapping !== "object" || Array.isArray(parsedMapping)) throw new Error("字段映射必须是对象");
-      if (!parsedAdapterConfig || typeof parsedAdapterConfig !== "object" || Array.isArray(parsedAdapterConfig)) throw new Error("适配器配置必须是对象");
       if (!selectedAdapterId) throw new Error("请选择适配器");
       setError("");
 
@@ -412,9 +434,10 @@ export default function WizardPage() {
           description: form.description,
           paramOverrides: parsedOverrides,
           paramBlocked: parsedBlocked,
-          fieldMapping: parsedMapping,
-          paramLimits,
-          adapterConfig: parsedAdapterConfig,
+           fieldMapping: parsedMapping,
+           paramLimits,
+            adapterConfig: applyAdapterConfigDefaults(selectedAdapter?.configSchema, adapterConfig),
+           parameterTemplateId: form.parameterTemplateId || null,
           maxDurationSec: form.maxDurationSec,
           selectedDurationSecs: form.selectedDurationSecs,
           selectedAspectRatios: form.selectedAspectRatios,
@@ -615,12 +638,23 @@ export default function WizardPage() {
           <p className="section-copy">
             来自 fal Schema 的参数已应用。请确认模态和能力标签，如有需要后续步骤可微调。
           </p>
+          {(modelData.parameterTemplates ?? []).length > 0 && (
+            <Field label="Open-Generative-AI 参数模板">
+              <select className="input" value={form.parameterTemplateId} onChange={(e) => setForm({ ...form, parameterTemplateId: e.target.value })}>
+                <option value="">不绑定模板</option>
+                {(modelData.parameterTemplates ?? []).map((template) => (
+                  <option value={template.id} key={template.id}>{template.sourceModelId} · {template.operation} · {template.matchStatus} · {template.matchConfidence}</option>
+                ))}
+              </select>
+              {form.parameterTemplateId && <small className="field-hint">最终确认时会按当前适配器配置重新校验，并把模板映射写入 Variant。</small>}
+            </Field>
+          )}
 
           {/* Schema attribution */}
           {modelData.currentFalSchema && (
             <div style={{ marginBottom: 16, padding: "10px 14px", background: "#f0f9ff", border: "1px solid #93c5fd", borderRadius: 6, fontSize: 12 }}>
               <span style={{ color: "#1d4ed8" }}>
-                {modelData.schemaMatchStatus === "confirmed" ? "✅ 已确认 Fal 映射: " : "⚠️ 候选 Fal Schema（未应用参数）: "}
+                {modelData.schemaMatchStatus === "confirmed" ? "✅ 已应用 Fal 模板: " : "⚠️ 候选 Fal 模板（未应用参数）: "}
                 <code>{modelData.currentFalSchema}</code>
               </span>
               <div style={{ marginTop: 4, color: "#64748b" }}>
@@ -652,7 +686,10 @@ export default function WizardPage() {
               <select
                 className="input"
                 value={selectedAdapterId}
-                onChange={(e) => setForm({ ...form, adapterId: e.target.value })}
+                onChange={(e) => {
+                  setForm({ ...form, adapterId: e.target.value });
+                  setAdapterConfig({});
+                }}
               >
                 {adapterOptions.map((adapter) => (
                   <option key={adapter.id} value={adapter.id}>
@@ -1045,8 +1082,15 @@ export default function WizardPage() {
           <p className="section-copy" style={{ marginBottom: 12 }}>
             上方的参考资源限制会单独保存，并在视频请求进入任务队列前校验；不需要写进下面三个 JSON。只有调用方字段名与上方 fal 字段不一致时，才填写字段映射。
           </p>
+          <div className="field">
+            <label className="label">适配器配置（{selectedAdapter?.displayName ?? (selectedAdapterId || "未选择")}）</label>
+            <AdapterConfigForm
+              schema={selectedAdapter?.configSchema}
+              value={adapterConfig}
+              onChange={setAdapterConfig}
+            />
+          </div>
           <div className="config-grid">
-            <JsonField label={`适配器配置（${selectedAdapterId || "未选择"}）`} value={adapterConfigJson} onChange={setAdapterConfigJson} />
             <JsonField label="强制参数覆盖" value={overridesJson} onChange={setOverridesJson} />
             <JsonField label="禁止参数" value={blockedJson} onChange={setBlockedJson} />
             <JsonField label="字段映射" value={mappingJson} onChange={setMappingJson} />

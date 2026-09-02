@@ -15,6 +15,7 @@ export const sites = sqliteTable(
     apiKeyEnc: text("api_key_enc").notNull(),
     apiKeyIv: text("api_key_iv").notNull(),
     adapterId: text("adapter_id").notNull().default("openai"),
+    configRevision: integer("config_revision").notNull().default(1),
     status: text("status", { enum: ["active", "disabled", "error"] })
       .notNull()
       .default("active"),

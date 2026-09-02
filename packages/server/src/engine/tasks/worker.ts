@@ -30,6 +30,7 @@ import {
 } from "./service";
 import { createHmac } from "node:crypto";
 import { logger } from "../../lib/log";
+import { safeFetch, validateUrl } from "../../lib/ssrf";
 import { mapStoredVariantParams } from "../param-mapper";
 import { readModelInputContract } from "../../lib/model-contract";
 import { normalizeVideoQuery } from "../video/normalize";
@@ -109,7 +110,7 @@ export async function submitPendingTasks(): Promise<number> {
       // 调用 adapter.submitVideoTask
       let route;
       try {
-        route = await resolveRouteById(task.variantId);
+          route = await resolveRouteById(task.variantId, "video.submit");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await markTaskFailedLocal(task.id, message);
@@ -124,8 +125,9 @@ export async function submitPendingTasks(): Promise<number> {
       }
 
       const contract = readModelInputContract(model);
+      const { protocol_id: _protocolId, adapter_id: _adapterId, adapter_version: _adapterVersion, ...requestMeta } = meta;
       const mapped = mapStoredVariantParams(
-        { ...meta },
+        { ...requestMeta },
         variant,
         [
           ...contract.fields,
@@ -141,7 +143,13 @@ export async function submitPendingTasks(): Promise<number> {
           "callback_url",
           "idempotency_key",
         ],
-        { keepProviderOptions: true },
+        {
+          keepProviderOptions: true,
+          paramDefaults: {
+            ...contract.defaults,
+            ...(variant.paramDefaults ? JSON.parse(variant.paramDefaults) : {}),
+          },
+        },
       );
       if (mapped.dropped.length > 0) {
         throw new Error(`unknown_parameter: ${mapped.dropped.join(", ")}`);
@@ -150,7 +158,7 @@ export async function submitPendingTasks(): Promise<number> {
       const result = await adapter.submitVideoTask(submitInput, {
         targetUrl: site.baseUrl,
         apiKey,
-        config: variant.adapterConfig ? JSON.parse(variant.adapterConfig) : undefined,
+        config: taskVideoConfig(meta, variant.adapterConfig),
       });
 
       // pending → processing（条件更新）
@@ -190,17 +198,19 @@ export async function pollOnce(): Promise<void> {
 
   for (const task of processing) {
     try {
-      const route = await resolveRouteById(task.variantId);
-      const { adapter, variant, site, apiKey } = route;
+      const route = await resolveRouteById(task.variantId, "video.query");
+      const { adapter, variant, model, site, apiKey } = route;
 
       if (!adapter.queryVideoTask) {
         continue;
       }
 
+      const taskMeta = parseTaskMeta(task) ?? {};
       const result = await adapter.queryVideoTask(task.siteTaskId!, {
         targetUrl: site.baseUrl,
         apiKey,
-        config: variant.adapterConfig ? JSON.parse(variant.adapterConfig) : undefined,
+        model: model.rawName,
+        config: taskVideoConfig(taskMeta, variant.adapterConfig),
       });
 
       const mappedStatus = result.status;
@@ -245,6 +255,20 @@ export async function pollOnce(): Promise<void> {
   }
 }
 
+function taskVideoConfig(meta: Record<string, unknown>, rawConfig: string | null): Record<string, unknown> | undefined {
+  let config: Record<string, unknown> = {};
+  if (rawConfig) {
+    const parsed = JSON.parse(rawConfig) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid variant adapter_config");
+    config = parsed as Record<string, unknown>;
+  }
+  if (typeof meta.protocol_id !== "string" || !meta.protocol_id) return Object.keys(config).length > 0 ? config : undefined;
+  const video = config.video && typeof config.video === "object" && !Array.isArray(config.video)
+    ? config.video as Record<string, unknown>
+    : {};
+  return { ...config, video: { ...video, protocol: meta.protocol_id } };
+}
+
 /**
  * 一轮回调投递
  */
@@ -270,14 +294,22 @@ export async function deliverCallbacksOnce(): Promise<void> {
         ? "sha256=" + createHmac("sha256", task.callbackSecret).update(payload).digest("hex")
         : undefined;
 
-      const resp = await fetch(task.callbackUrl!, {
+      try {
+        await validateUrl(task.callbackUrl!, { requireHttps: true });
+      } catch {
+        await recordCallbackFailure(task.id, task.callbackAttempts);
+        logger.warn(`[tasks] callback ${task.id} rejected by URL security policy`);
+        continue;
+      }
+
+      const resp = await safeFetch(task.callbackUrl!, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           ...(sig ? { "X-OpenHub-Signature": sig } : {}),
         },
         body: payload,
-        signal: AbortSignal.timeout(10_000),
+        timeoutMs: 10_000,
       });
 
       if (resp.ok) {

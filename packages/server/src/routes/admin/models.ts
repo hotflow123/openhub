@@ -1,13 +1,29 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, inArray } from "drizzle-orm";
 import { db } from "../../db/index";
-import { sites, models, type ModelRow } from "../../db/schema/index";
+import { sites, models, modelCapabilityProbes, modelParameterTemplates, type ModelRow } from "../../db/schema/index";
 import { withAdminAuth } from "./_with-auth";
 import { writeAudit } from "../../lib/audit";
+import { modelEvidenceState } from "../../lib/model-contract";
+import { isProbeForCurrentConfig } from "../../engine/capability/status";
 
 const modelsRoute = new Hono();
 withAdminAuth(modelsRoute);
+
+function runtimeCapabilityForModality(modality: string): string | null {
+  return modality === "llm"
+    ? "chat"
+    : modality === "image"
+      ? "image.generation"
+      : modality === "audio"
+        ? "audio.speech"
+        : modality === "video"
+          ? "video.submit"
+          : modality === "embedding"
+            ? "embedding"
+            : null;
+}
 
 modelsRoute.get("/models", async (c) => {
   const siteId = c.req.query("site_id");
@@ -49,6 +65,18 @@ modelsRoute.get("/models", async (c) => {
        videoContractStatus: models.videoContractStatus,
        videoContractReason: models.videoContractReason,
        videoContractSyncedAt: models.videoContractSyncedAt,
+       capabilityContractSnapshot: models.capabilityContractSnapshot,
+       capabilityContractSource: models.capabilityContractSource,
+       capabilityContractStatus: models.capabilityContractStatus,
+       capabilityContractReason: models.capabilityContractReason,
+       capabilityContractSyncedAt: models.capabilityContractSyncedAt,
+       modelIdentityStatus: models.modelIdentityStatus,
+       modelIdentitySource: models.modelIdentitySource,
+       modelIdentityReason: models.modelIdentityReason,
+       adapterVersion: models.adapterVersion,
+       adapterHash: models.adapterHash,
+       adapterValidationStatus: models.adapterValidationStatus,
+       adapterValidationReason: models.adapterValidationReason,
       // 视频参数
       videoDurationEnum: models.videoDurationEnum,
       videoAspectRatios: models.videoAspectRatios,
@@ -78,6 +106,7 @@ modelsRoute.get("/models", async (c) => {
       createdAt: models.createdAt,
       updatedAt: models.updatedAt,
       siteName: sites.name,
+      siteConfigRevision: sites.configRevision,
     })
     .from(models)
     .leftJoin(sites, eq(models.siteId, sites.id));
@@ -118,8 +147,20 @@ modelsRoute.get("/models", async (c) => {
            videoContractSnapshot: models.videoContractSnapshot,
            videoContractSource: models.videoContractSource,
            videoContractStatus: models.videoContractStatus,
-           videoContractReason: models.videoContractReason,
-           videoContractSyncedAt: models.videoContractSyncedAt,
+            videoContractReason: models.videoContractReason,
+            videoContractSyncedAt: models.videoContractSyncedAt,
+           capabilityContractSnapshot: models.capabilityContractSnapshot,
+           capabilityContractSource: models.capabilityContractSource,
+           capabilityContractStatus: models.capabilityContractStatus,
+           capabilityContractReason: models.capabilityContractReason,
+           capabilityContractSyncedAt: models.capabilityContractSyncedAt,
+           modelIdentityStatus: models.modelIdentityStatus,
+           modelIdentitySource: models.modelIdentitySource,
+           modelIdentityReason: models.modelIdentityReason,
+           adapterVersion: models.adapterVersion,
+           adapterHash: models.adapterHash,
+           adapterValidationStatus: models.adapterValidationStatus,
+           adapterValidationReason: models.adapterValidationReason,
           videoDurationEnum: models.videoDurationEnum,
           videoAspectRatios: models.videoAspectRatios,
           videoResolutions: models.videoResolutions,
@@ -146,20 +187,83 @@ modelsRoute.get("/models", async (c) => {
           createdAt: models.createdAt,
           updatedAt: models.updatedAt,
           siteName: sites.name,
+          siteConfigRevision: sites.configRevision,
         })
         .from(models)
         .leftJoin(sites, eq(models.siteId, sites.id))
         .where(eq(models.siteId, siteId))
     : await baseQuery;
 
-  return c.json({ data: rows });
+  const probeRows = rows.length
+    ? await db
+      .select()
+      .from(modelCapabilityProbes)
+      .where(inArray(modelCapabilityProbes.modelId, rows.map((row) => row.id)))
+      .orderBy(desc(modelCapabilityProbes.checkedAt))
+    : [];
+  const latestProbe = new Map<string, typeof probeRows[number]>();
+  for (const probe of probeRows) {
+    const modelRow = rows.find((row) => row.id === probe.modelId);
+    if (!isProbeForCurrentConfig(probe.configRevision, modelRow?.siteConfigRevision)) continue;
+    if (!latestProbe.has(`${probe.modelId}:${probe.capability}`)) {
+      latestProbe.set(`${probe.modelId}:${probe.capability}`, probe);
+    }
+  }
+  return c.json({
+    data: rows.map((row) => ({
+      ...row,
+       ...modelEvidenceState(row, (() => {
+         const capability = runtimeCapabilityForModality(row.modality);
+         const probe = capability
+           ? latestProbe.get(`${row.id}:${capability}`)
+           : undefined;
+         return probe ? { status: probe.status, capability: probe.capability, requiredCapability: capability } : null;
+       })()),
+      runtimeProbes: Array.from(latestProbe.values())
+        .filter((probe) => probe.modelId === row.id)
+        .map((probe) => ({
+          capability: probe.capability,
+          mode: probe.mode,
+          status: probe.status,
+          httpStatus: probe.httpStatus,
+          upstreamCode: probe.upstreamCode,
+          message: probe.message,
+          requestId: probe.requestId,
+          retryAfter: probe.retryAfter,
+          latencyMs: probe.latencyMs,
+          checkedAt: probe.checkedAt,
+        })),
+    })),
+  });
 });
 
 modelsRoute.get("/models/:id", async (c) => {
   const id = c.req.param("id");
   const [row] = await db.select().from(models).where(eq(models.id, id)).limit(1);
   if (!row) return c.json({ error: "Not found" }, 404);
-  return c.json({ data: row });
+  const [site] = await db.select({ configRevision: sites.configRevision }).from(sites).where(eq(sites.id, row.siteId)).limit(1);
+  const probes = await db
+    .select()
+    .from(modelCapabilityProbes)
+    .where(eq(modelCapabilityProbes.modelId, id))
+    .orderBy(desc(modelCapabilityProbes.checkedAt))
+    .limit(20);
+  const capability = runtimeCapabilityForModality(row.modality);
+  const runtimeProbe = probes.find((probe) => capability
+    && probe.capability === capability
+    && isProbeForCurrentConfig(probe.configRevision, site?.configRevision));
+  const templates = await db.select().from(modelParameterTemplates).where(eq(modelParameterTemplates.modelId, id));
+  return c.json({ data: { ...row, ...modelEvidenceState(row, runtimeProbe ?? null), runtimeProbes: probes, parameterTemplates: templates } });
+});
+
+modelsRoute.get("/models/:id/parameter-templates", async (c) => {
+  const id = c.req.param("id");
+  const templates = await db.select().from(modelParameterTemplates).where(eq(modelParameterTemplates.modelId, id));
+  return c.json({ data: templates });
+});
+
+modelsRoute.post("/models/:id/parameter-templates/:templateId/apply", async (c) => {
+  return c.json({ error: { message: "A Variant is required to apply a parameter template", code: "parameter_template_variant_required" } }, 400);
 });
 
 const PatchModelSchema = z.object({
@@ -354,7 +458,7 @@ modelsRoute.patch("/models/:id", async (c) => {
       payload: JSON.stringify({ adapterId: parsed.data.adapterId, adapterSource: "manual" }),
     });
   }
-  return c.json({ data: row });
+  return c.json({ data: { ...row, ...modelEvidenceState(row, null) } });
 });
 
 modelsRoute.delete("/models/:id", async (c) => {

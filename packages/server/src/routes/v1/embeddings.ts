@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { authMiddleware, checkVariantAccess } from "../../middleware/auth";
-import { forwardEmbedding, RouterError } from "../router";
+import { forwardEmbedding, normalizeRouterError } from "../router";
 import type { EmbeddingRequest } from "../../engine/adapter";
 
 const embeddings = new Hono();
@@ -18,7 +18,7 @@ embeddings.post("/v1/embeddings", async (c) => {
     return c.json({ error: { message: "Missing model" } }, 400);
   }
 
-  const access = checkVariantAccess(c, variantId);
+  const access = await checkVariantAccess(c, variantId);
   if (!access.ok) {
     return c.json(access.body, access.status as 401 | 403);
   }
@@ -28,11 +28,11 @@ embeddings.post("/v1/embeddings", async (c) => {
   try {
     return c.json(await forwardEmbedding(variantId, body));
   } catch (err) {
-    if (err instanceof RouterError) {
-      return c.json({ error: { message: err.message, code: err.code } }, err.status as 400 | 404 | 500);
-    }
-    const message = err instanceof Error ? err.message : String(err);
-    return c.json({ error: { message } }, 502);
+    const routerError = normalizeRouterError(err);
+    return new Response(
+      JSON.stringify({ error: { message: routerError.message, code: routerError.code, details: routerError.details } }),
+      { status: routerError.status, headers: { "Content-Type": "application/json" } },
+    );
   }
 });
 

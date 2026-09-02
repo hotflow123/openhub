@@ -86,7 +86,7 @@ test("recognizes common model families without model-specific aliases", async ()
     ["qwen3-vl-32b-instruct", "Alibaba", "qwen", "llm"],
     ["glm-4-flash", "Zhipu AI", "glm", "llm"],
     ["qwen3-rerank", "Alibaba", "qwen-reranker", "embedding"],
-    ["happyhorse-1.0-i2v", "Unknown", "happyhorse", "video"],
+    ["happyhorse-1.0-i2v", "Alibaba", "happyhorse", "video"],
     ["pixverse-lipsync", "PixVerse", "pixverse", "video"],
     ["suno_music_open", "Suno", "suno", "audio"],
     ["viduq3-pro", "ShengShu", "vidu", "video"],

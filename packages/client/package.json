@@ -1,0 +1,17 @@
+{
+  "name": "@openhub/client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/client.test.ts"
+  },
+  "dependencies": {
+    "@openhub/adapter-sdk": "workspace:*"
+  }
+}

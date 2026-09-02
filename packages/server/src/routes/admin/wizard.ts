@@ -9,11 +9,13 @@ import {
   sites,
   modelCatalog,
   modelSchemaCatalog,
+  modelParameterTemplates,
 } from "../../db/schema/index";
 import { withAdminAuth } from "./_with-auth";
 import { writeAudit } from "../../lib/audit";
 import { inferModelCapability, type ModelCapability } from "../../engine/llm-model-infer";
 import { extractInputSchemaCapabilities } from "../../lib/fal-input-schema";
+import { evaluateSchemaTemplateCompatibility } from "../../engine/catalog/schema-matcher";
 import {
   getAdapter,
   listAdapters,
@@ -24,13 +26,35 @@ import {
 import {
   validateVariantLimits,
   validateParameterLimitsAgainstModel,
+  validateVariantParameterPolicy,
   readModelInputContract,
+  buildCapabilityContract,
+  modelEvidenceState,
 } from "../../lib/model-contract";
+import { getProviderAdapterRegistration } from "../../engine/adapter-manifest";
+import { evaluateParameterTemplateCompatibility } from "../../engine/catalog/parameter-template-matcher";
 
 const wizard = new Hono();
 withAdminAuth(wizard);
 
 const ModalitySchema = z.enum(["llm", "embedding", "image", "audio", "video"]);
+
+function extractDefaults(raw: string | null): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const rows = JSON.parse(raw) as unknown;
+    if (!Array.isArray(rows)) return {};
+    return Object.fromEntries(rows.flatMap((row) => {
+      if (!row || typeof row !== "object" || Array.isArray(row)) return [];
+      const item = row as Record<string, unknown>;
+      return typeof item.name === "string" && Object.prototype.hasOwnProperty.call(item, "default")
+        ? [[item.name, item.default]]
+        : [];
+    }));
+  } catch {
+    return {};
+  }
+}
 
 wizard.get("/wizard/models", async (c) => {
   const unknownModels = await db.select({ id: models.id, siteId: models.siteId, rawName: models.rawName, displayName: models.displayName, status: models.status, adapterId: models.adapterId, siteName: sites.name, siteBaseUrl: sites.baseUrl }).from(models).leftJoin(sites, eq(models.siteId, sites.id)).where(eq(models.status, "unknown")).orderBy(models.createdAt).limit(100);
@@ -79,6 +103,18 @@ wizard.get("/wizard/:modelId/step1", async (c) => {
       videoRequiredParams: models.videoRequiredParams,
       videoOptionalParams: models.videoOptionalParams,
       generateAudioSupported: models.generateAudioSupported,
+      capabilityContractSnapshot: models.capabilityContractSnapshot,
+      capabilityContractSource: models.capabilityContractSource,
+      capabilityContractStatus: models.capabilityContractStatus,
+      capabilityContractReason: models.capabilityContractReason,
+      capabilityContractSyncedAt: models.capabilityContractSyncedAt,
+      modelIdentityStatus: models.modelIdentityStatus,
+      modelIdentitySource: models.modelIdentitySource,
+      modelIdentityReason: models.modelIdentityReason,
+      adapterVersion: models.adapterVersion,
+      adapterHash: models.adapterHash,
+      adapterValidationStatus: models.adapterValidationStatus,
+      adapterValidationReason: models.adapterValidationReason,
     })
     .from(models)
     .where(eq(models.id, modelId))
@@ -87,6 +123,8 @@ wizard.get("/wizard/:modelId/step1", async (c) => {
 
   const modelInputContract = readModelInputContract(model);
   const hasConfirmedSchema = model.schemaMatchStatus === "confirmed";
+  const evidenceState = modelEvidenceState(model);
+  const parameterTemplates = await db.select({ id: modelParameterTemplates.id, source: modelParameterTemplates.source, sourceModelId: modelParameterTemplates.sourceModelId, operation: modelParameterTemplates.operation, matchStatus: modelParameterTemplates.matchStatus, matchConfidence: modelParameterTemplates.matchConfidence, matchReason: modelParameterTemplates.matchReason, fieldMapping: modelParameterTemplates.fieldMapping }).from(modelParameterTemplates).where(eq(modelParameterTemplates.modelId, modelId));
 
   const [site] = await db
     .select({ name: sites.name, status: sites.status, adapterId: sites.adapterId })
@@ -254,6 +292,7 @@ wizard.get("/wizard/:modelId/step1", async (c) => {
       schemaMatchConfidence: model.schemaMatchConfidence,
       schemaMatchReason: model.schemaMatchReason,
       falParametersSnapshot: hasConfirmedSchema ? model.falParametersSnapshot : null,
+      parameterTemplates,
       // 从已保存的 falInputSchemaSnapshot 解析参考资源上限
       falInputSchemaCapabilities: hasConfirmedSchema
         ? extractInputSchemaCapabilities(
@@ -265,9 +304,14 @@ wizard.get("/wizard/:modelId/step1", async (c) => {
         fields: modelInputContract.fields,
         requiredFields: modelInputContract.requiredFields,
         enums: modelInputContract.enums,
+        defaults: modelInputContract.defaults,
+        fieldNodes: modelInputContract.fieldNodes,
         totalReferenceFiles: modelInputContract.totalReferenceFiles,
         audioRequiresImageOrVideo: modelInputContract.audioRequiresImageOrVideo,
+        source: modelInputContract.source,
+        status: modelInputContract.status,
       },
+      evidence: evidenceState,
       videoDurationEnum: hasConfirmedSchema ? model.videoDurationEnum : null,
       videoAspectRatios: hasConfirmedSchema ? model.videoAspectRatios : null,
       videoResolutions: hasConfirmedSchema ? model.videoResolutions : null,
@@ -295,7 +339,7 @@ wizard.post("/wizard/:modelId/apply-schema", async (c) => {
 
   // 读取模型
   const [model] = await db
-    .select({ id: models.id, siteId: models.siteId })
+    .select()
     .from(models)
     .where(eq(models.id, modelId))
     .limit(1);
@@ -395,6 +439,85 @@ wizard.post("/wizard/:modelId/apply-schema", async (c) => {
     schema.parameters ?? null,
   );
 
+  const canonicalAdapterId = normalizeAdapterId(model.adapterId) ?? model.adapterId;
+  const adapter = getAdapter(canonicalAdapterId);
+  const registration = getProviderAdapterRegistration(canonicalAdapterId);
+  if (schema.modality !== parsed.data.modality) {
+    return c.json({
+      error: {
+        message: `Schema modality ${schema.modality} does not match ${parsed.data.modality}`,
+        code: "schema_modality_mismatch",
+      },
+    }, 400);
+  }
+  if (!schema.inputSchema && !schema.parameters) {
+    return c.json({
+      error: { message: "Selected Schema has no usable input contract", code: "schema_contract_missing" },
+    }, 400);
+  }
+  const adapterCapabilityError = adapter
+    ? validateAdapterCapability(adapter, parsed.data.modality)
+    : `Adapter not found: ${canonicalAdapterId}`;
+  if (adapterCapabilityError) {
+    return c.json({ error: { message: adapterCapabilityError, code: "adapter_capability_unsupported" } }, 400);
+  }
+  const templateCompatibility = evaluateSchemaTemplateCompatibility({
+    model,
+    schema: {
+      endpointId: schema.endpointId,
+      title: schema.title,
+      modality: schema.modality,
+      pricing: schema.pricing,
+      parameters: typeof schema.parameters === "string" ? schema.parameters : null,
+      inputSchema: schema.inputSchema,
+      outputSchema: schema.outputSchema,
+      description: schema.description,
+      falCategory: schema.falCategory,
+      falSource: schema.falSource,
+    },
+    registration,
+    schemaConfirmed: true,
+  });
+  if (templateCompatibility.decision === "incompatible") {
+    return c.json({
+      error: {
+        message: `Schema template is incompatible: ${templateCompatibility.reasons.join(", ")}`,
+        code: "schema_template_incompatible",
+        details: templateCompatibility,
+      },
+    }, 409);
+  }
+  const capabilityContract = adapter
+    ? buildCapabilityContract({
+      modality: parsed.data.modality,
+      identity: { status: "recognized", source: "admin", reason: "wizard_apply_schema" },
+      inferred: {
+        modality: parsed.data.modality,
+        confidence: 1,
+        endpointCaps: JSON.parse(endpointCaps) as string[],
+        paramCaps: [],
+        parameters,
+      },
+      runtimeMetadata: {
+        parameters,
+        input_schema: schema.inputSchema,
+      },
+      adapterCapabilities: adapter.capabilities,
+      adapterValidationStatus: registration?.status ?? "invalid",
+      templateEvidence: {
+        decision: templateCompatibility.decision,
+        templateId: templateCompatibility.templateId,
+        operations: templateCompatibility.operations,
+        requiredFieldsMapped: templateCompatibility.unmappedRequiredFields.length === 0,
+        lifecycleConfirmed: parsed.data.modality !== "video"
+          || (templateCompatibility.operations.includes("video.submit") && templateCompatibility.operations.includes("video.query")),
+        reason: templateCompatibility.reasons.join(","),
+        fieldMapping: templateCompatibility.fieldMapping,
+        overridableFields: templateCompatibility.overridableFields,
+      },
+    })
+    : null;
+
   // 更新模型
   const now = new Date();
   await db
@@ -406,9 +529,9 @@ wizard.post("/wizard/:modelId/apply-schema", async (c) => {
       capsOverridden: 0,
       schemaEndpointId: parsed.data.endpointId,
       schemaMatchSource: "manual",
-      schemaMatchStatus: "confirmed",
-      schemaMatchConfidence: "high",
-      schemaMatchReason: "wizard_apply_schema",
+       schemaMatchStatus: templateCompatibility.decision === "confirmed" ? "confirmed" : "candidate",
+       schemaMatchConfidence: templateCompatibility.decision === "confirmed" ? "high" : "medium",
+       schemaMatchReason: `wizard_apply_schema:${templateCompatibility.reasons.join(",")}`,
       schemaSyncedAt: now,
       falParametersSnapshot:
         params.length > 0 ? JSON.stringify(params) : null,
@@ -445,6 +568,19 @@ wizard.post("/wizard/:modelId/apply-schema", async (c) => {
       maxReferenceAudios: caps.maxReferenceAudios,
       requiresAsync,
       supportsStream: 1,
+      capabilityContractSnapshot: capabilityContract ? JSON.stringify(capabilityContract) : null,
+      capabilityContractSource: capabilityContract?.source ?? null,
+      capabilityContractStatus: capabilityContract?.status ?? "unverified",
+      capabilityContractReason: capabilityContract?.reason ?? "adapter_not_registered",
+      capabilityContractSyncedAt: now,
+      modelIdentityStatus: "recognized",
+      modelIdentitySource: "admin",
+       modelIdentityReason: "wizard_apply_schema",
+      adapterVersion: registration?.manifest.version ?? model.adapterVersion,
+      adapterValidationStatus: registration?.status ?? "invalid",
+      adapterValidationReason: registration?.issues.length
+        ? registration.issues.map((issue) => `${issue.path}: ${issue.message}`).join("; ")
+        : null,
       updatedAt: now,
     })
     .where(eq(models.id, modelId));
@@ -458,6 +594,10 @@ wizard.post("/wizard/:modelId/apply-schema", async (c) => {
       modelId,
       endpointId: parsed.data.endpointId,
       modality: parsed.data.modality,
+      templateDecision: templateCompatibility.decision,
+      templateId: templateCompatibility.templateId,
+      fieldMapping: templateCompatibility.fieldMapping,
+      overridableFields: templateCompatibility.overridableFields,
     }),
   });
 
@@ -472,6 +612,7 @@ wizard.post("/wizard/:modelId/apply-schema", async (c) => {
       maxReferenceAudios: caps.maxReferenceAudios,
       inputSchemaJson: caps.inputSchemaJson,
       parametersCount: params.length,
+      templateCompatibility,
     },
   });
 });
@@ -490,6 +631,7 @@ const ConfirmSchema = z.object({
     adapterId: z.string().min(1),
     variantName: z.string().min(1).max(64),
     description: z.string(),
+    paramDefaults: z.record(z.string(), z.unknown()).nullable().optional(),
     paramOverrides: z.record(z.string(), z.unknown()),
     paramBlocked: z.array(z.string()),
     fieldMapping: z.record(z.string(), z.string()),
@@ -514,6 +656,7 @@ const ConfirmSchema = z.object({
     maxReferenceVideos: z.number().int().nonnegative().nullable().optional(),
     maxReferenceAudios: z.number().int().nonnegative().nullable().optional(),
     generateAudio: z.boolean().optional(),
+    parameterTemplateId: z.string().min(1).nullable().optional(),
   }),
 });
 
@@ -563,6 +706,62 @@ wizard.post("/wizard/:modelId/confirm", async (c) => {
     return c.json({ error: { message: adapterConfigError, code: "adapter_config_invalid" } }, 400);
   }
 
+  const protocolId = step3.adapterConfig?.video && typeof step3.adapterConfig.video === "object" && !Array.isArray(step3.adapterConfig.video)
+    ? (step3.adapterConfig.video as Record<string, unknown>).protocol
+    : undefined;
+  const registration = getProviderAdapterRegistration(adapterId);
+  const parameterTemplateId = step3.parameterTemplateId ?? null;
+  let selectedParameterTemplate: typeof modelParameterTemplates.$inferSelect | null = null;
+  let parameterTemplateCompatibility: ReturnType<typeof evaluateParameterTemplateCompatibility> | null = null;
+  if (parameterTemplateId) {
+    const [templateRow] = await db.select().from(modelParameterTemplates).where(eq(modelParameterTemplates.id, parameterTemplateId)).limit(1);
+    if (!templateRow || templateRow.modelId !== modelId) {
+      return c.json({ error: { message: "Parameter template not found for model", code: "parameter_template_invalid" } }, 404);
+    }
+    let normalizedTemplate: unknown;
+    try { normalizedTemplate = JSON.parse(templateRow.templateSnapshot); } catch {
+      return c.json({ error: { message: "Parameter template snapshot is invalid", code: "parameter_template_invalid" } }, 409);
+    }
+    parameterTemplateCompatibility = evaluateParameterTemplateCompatibility({ model, template: normalizedTemplate as never, registration: registration ?? null, operation: templateRow.operation, templateConfirmed: true, adapterConfig });
+    if (parameterTemplateCompatibility.decision !== "confirmed") {
+      return c.json({ error: { message: `Parameter template is not executable: ${parameterTemplateCompatibility.reasons.join(",")}`, code: "parameter_template_requires_review", details: parameterTemplateCompatibility } }, 409);
+    }
+    selectedParameterTemplate = templateRow;
+  }
+  let templateCompatibility = null as ReturnType<typeof evaluateSchemaTemplateCompatibility> | null;
+  if (model.schemaEndpointId) {
+    const [schema] = await db.select().from(modelSchemaCatalog).where(eq(modelSchemaCatalog.endpointId, model.schemaEndpointId)).limit(1);
+    if (schema) {
+      templateCompatibility = evaluateSchemaTemplateCompatibility({
+        model,
+        schema: {
+          endpointId: schema.endpointId,
+          title: schema.title,
+          modality: schema.modality,
+          pricing: schema.pricing,
+          parameters: schema.parameters,
+          inputSchema: schema.inputSchema,
+          outputSchema: schema.outputSchema,
+          description: schema.description,
+          falCategory: schema.falCategory,
+          falSource: schema.falSource,
+        },
+        registration,
+        protocolId: typeof protocolId === "string" ? protocolId : null,
+        schemaConfirmed: model.schemaMatchSource === "manual" || model.schemaMatchStatus === "confirmed",
+      });
+      if (templateCompatibility.decision === "incompatible") {
+        return c.json({
+          error: {
+            message: `Schema template is incompatible: ${templateCompatibility.reasons.join(", ")}`,
+            code: "schema_template_incompatible",
+            details: templateCompatibility,
+          },
+        }, 409);
+      }
+    }
+  }
+
   const selectedDurationValues = step3.selectedDurationSecs?.map(String) ?? [];
   const numericDurationValues = selectedDurationValues
     .map(Number)
@@ -593,8 +792,51 @@ wizard.post("/wizard/:modelId/confirm", async (c) => {
   if (paramLimitsError) {
     return c.json({ error: { message: paramLimitsError, code: "model_constraint_invalid" } }, 400);
   }
+  const policyError = validateVariantParameterPolicy(step3.fieldMapping, step3.paramOverrides, model);
+  if (policyError) {
+    return c.json({ error: { message: policyError, code: "model_constraint_invalid" } }, 400);
+  }
   const now = new Date();
   const variantId = `var_${nanoid(10)}`;
+  const capabilityContract = buildCapabilityContract({
+    modality: step2.modality,
+    identity: { status: "recognized", source: "admin", reason: "wizard_confirm" },
+    inferred: {
+      modality: step2.modality,
+      confidence: 1,
+      endpointCaps: step2.endpointCaps,
+      paramCaps: step2.paramCaps,
+      parameters: model.falParametersSnapshot
+        ? (() => {
+          try {
+            const parsed = JSON.parse(model.falParametersSnapshot) as unknown;
+            return Array.isArray(parsed) ? parsed : [];
+          } catch {
+            return [];
+          }
+        })()
+        : [],
+    },
+    runtimeMetadata: {
+      parameters: model.falParametersSnapshot,
+      input_schema: model.falInputSchemaSnapshot,
+    },
+    adapterCapabilities: adapter.capabilities,
+    adapterValidationStatus: registration?.status ?? "invalid",
+    templateEvidence: templateCompatibility
+      ? {
+        decision: templateCompatibility.decision,
+        templateId: templateCompatibility.templateId,
+        operations: templateCompatibility.operations,
+        requiredFieldsMapped: templateCompatibility.unmappedRequiredFields.length === 0,
+        lifecycleConfirmed: step2.modality !== "video"
+          || (templateCompatibility.operations.includes("video.submit") && templateCompatibility.operations.includes("video.query")),
+        reason: templateCompatibility.reasons.join(","),
+        fieldMapping: templateCompatibility.fieldMapping,
+        overridableFields: templateCompatibility.overridableFields,
+      }
+      : null,
+  });
 
   // selectedDurationSecs / selectedAspectRatios / selectedResolutions 写入变体限制
   const maxImages = step3.maxImages ?? step3.maxReferenceImages ?? null;
@@ -606,6 +848,15 @@ wizard.post("/wizard/:modelId/confirm", async (c) => {
       ? { generate_audio: step3.generateAudio }
       : {}),
   };
+  const mergedFieldMapping = { ...(parameterTemplateCompatibility?.fieldMapping ?? {}), ...step3.fieldMapping };
+  const templateDefaults = selectedParameterTemplate
+    ? (() => {
+      try {
+        const snapshot = JSON.parse(selectedParameterTemplate.templateSnapshot) as { inputs?: Record<string, { default?: unknown }> };
+        return Object.fromEntries(Object.entries(snapshot.inputs ?? {}).filter(([, field]) => field && Object.prototype.hasOwnProperty.call(field, "default")).map(([name, field]) => [name, field.default]));
+      } catch { return {}; }
+    })()
+    : {};
 
   db.transaction((tx) => {
     tx.update(models).set({
@@ -626,6 +877,19 @@ wizard.post("/wizard/:modelId/confirm", async (c) => {
       maxDurationSec,
       supportsStream: Number(step3.supportsStream ?? model.supportsStream),
       requiresAsync: Number(step3.requiresAsync ?? model.requiresAsync),
+      capabilityContractSnapshot: capabilityContract ? JSON.stringify(capabilityContract) : null,
+      capabilityContractSource: capabilityContract?.source ?? "admin",
+      capabilityContractStatus: capabilityContract?.status ?? "unverified",
+      capabilityContractReason: capabilityContract?.reason ?? "wizard_confirm",
+      capabilityContractSyncedAt: now,
+      modelIdentityStatus: "recognized",
+      modelIdentitySource: "admin",
+      modelIdentityReason: "wizard_confirm",
+      adapterVersion: registration?.manifest.version ?? model.adapterVersion,
+      adapterValidationStatus: registration?.status ?? "invalid",
+      adapterValidationReason: registration?.issues.length
+        ? registration.issues.map((issue) => `${issue.path}: ${issue.message}`).join("; ")
+        : null,
       updatedAt: now,
     }).where(eq(models.id, modelId)).run();
 
@@ -633,11 +897,16 @@ wizard.post("/wizard/:modelId/confirm", async (c) => {
       id: variantId,
       name: step3.variantName,
       modelId,
+      parameterTemplateId,
       description: step3.description || null,
       adapterConfig: adapterConfig ? JSON.stringify(adapterConfig) : null,
+      adapterConfigStatus: "valid",
+      adapterConfigReason: "validated_on_wizard_confirm",
+      adapterConfigValidatedAt: now,
+      paramDefaults: JSON.stringify(step3.paramDefaults ?? (Object.keys(templateDefaults).length > 0 ? templateDefaults : extractDefaults(model.falParametersSnapshot))),
       paramOverrides: JSON.stringify(mergedOverrides),
       paramBlocked: JSON.stringify(step3.paramBlocked),
-      fieldMapping: JSON.stringify(step3.fieldMapping),
+      fieldMapping: JSON.stringify(mergedFieldMapping),
       paramLimits: Object.keys(paramLimits).length > 0 ? JSON.stringify(paramLimits) : null,
       maxContext: step3.contextWindow ?? null,
       maxOutput: step3.maxOutputTokens ?? null,
@@ -651,6 +920,9 @@ wizard.post("/wizard/:modelId/confirm", async (c) => {
       createdAt: now,
       updatedAt: now,
     }).run();
+    if (selectedParameterTemplate && parameterTemplateCompatibility) {
+      tx.update(modelParameterTemplates).set({ matchStatus: "applied", fieldMapping: JSON.stringify(parameterTemplateCompatibility.fieldMapping), matchReason: parameterTemplateCompatibility.reasons.join(","), updatedAt: now }).where(eq(modelParameterTemplates.id, selectedParameterTemplate.id)).run();
+    }
   });
 
   await writeAudit({ actor: "admin", action: "wizard.confirm", resourceType: "variant", resourceId: variantId, payload: JSON.stringify({ modelId, variantName: step3.variantName, modality: step2.modality }) });

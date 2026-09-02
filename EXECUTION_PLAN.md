@@ -1,5 +1,7 @@
 # OpenHub models.dev 集成补全执行计划
 
+> **状态（2026-08-30）：** 本文件是 models.dev 的历史可选优化计划，不是当前多模态适配器主线的完成门槛。主线状态以 `EXECUTION-PLAN-MULTIMODAL-ADAPTER-SDK.md` 和 `COMPLETION_STATUS.md` 为准；环境配置、数据库备份和监控口径已收敛到 `docs/OPERATIONS.md`。
+
 **生成时间**: 2026-08-17 04:15 AM (UTC+8)  
 **基于**: DESIGN.md (4084 行) + COMPLETION_STATUS.md + models.dev 仓库调研  
 **目标**: 完善 models.dev 数据源集成，提升目录覆盖率和匹配准确性

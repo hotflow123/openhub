@@ -172,10 +172,14 @@ export async function safeFetch(
   url: string,
   init: RequestInit & { timeoutMs?: number } = {},
 ): Promise<Response> {
-  const { timeoutMs = 30_000, ...rest } = init;
+  const { timeoutMs = 30_000, signal: callerSignal, ...rest } = init;
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const signal = callerSignal
+    ? AbortSignal.any([callerSignal, timeoutSignal])
+    : timeoutSignal;
   return await fetch(url, {
     ...rest,
     redirect: "error", // 禁止重定向（防 SSRF 重定向到内网）
-    signal: AbortSignal.timeout(timeoutMs),
+    signal,
   });
 }

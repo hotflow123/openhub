@@ -217,8 +217,10 @@ export default function CatalogPage() {
         >
           OpenRouter 目录
         </button>
-        <button
+        <div
           className={`tab-button ${activeTab === "fal" ? "active" : ""}`}
+          role="tab"
+          aria-selected={activeTab === "fal"}
           onClick={() => setActiveTab("fal")}
         >
           fal.ai Schema
@@ -233,7 +235,7 @@ export default function CatalogPage() {
           >
             {syncSchema.isPending ? "同步中..." : "同步 Schema"}
           </button>
-        </button>
+        </div>
       </div>
 
       {activeTab === "openrouter" ? (

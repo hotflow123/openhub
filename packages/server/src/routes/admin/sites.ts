@@ -133,6 +133,12 @@ sitesRoute.patch("/sites/:id", async (c) => {
     }
   }
 
+  const [current] = await db.select().from(sites).where(eq(sites.id, id)).limit(1);
+  if (!current) return c.json({ error: "Not found" }, 404);
+  const configChanged = parsed.data.baseUrl !== undefined
+    || parsed.data.apiKey !== undefined
+    || parsed.data.adapterId !== undefined;
+
   const update: Record<string, unknown> = { updatedAt: new Date() };
   if (parsed.data.name) update.name = parsed.data.name;
   if (parsed.data.baseUrl) update.baseUrl = parsed.data.baseUrl;
@@ -142,6 +148,7 @@ sitesRoute.patch("/sites/:id", async (c) => {
     update.apiKeyEnc = enc.ciphertext;
     update.apiKeyIv = enc.iv;
   }
+  if (configChanged) update.configRevision = current.configRevision + 1;
   await db.update(sites).set(update).where(eq(sites.id, id));
   const [row] = await db.select().from(sites).where(eq(sites.id, id)).limit(1);
   return c.json({ data: stripSecret(row) });

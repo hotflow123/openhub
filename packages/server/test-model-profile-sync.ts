@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildDerivedModelProfile } from "./src/engine/model-profile";
+import {
+  buildDerivedModelProfile,
+  shouldRefreshDerivedModelProfile,
+} from "./src/engine/model-profile";
 import { buildCatalogProfileUpdate } from "./src/engine/catalog/profile";
 
 test("rebuilds an embedding profile without stale LLM fields", () => {
@@ -25,6 +28,11 @@ test("rebuilds an embedding profile without stale LLM fields", () => {
   assert.equal(profile.maxDurationSec, null);
   assert.equal(profile.supportsStream, 0);
   assert.equal(profile.requiresAsync, 0);
+});
+
+test("preserves manual capability overrides during rediscovery", () => {
+  assert.equal(shouldRefreshDerivedModelProfile(0), true);
+  assert.equal(shouldRefreshDerivedModelProfile(1), false);
 });
 
 test("does not infer video limits or async execution from modality alone", () => {

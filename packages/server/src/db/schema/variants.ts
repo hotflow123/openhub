@@ -1,6 +1,7 @@
 import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 import { models } from "./models";
+import { modelParameterTemplates } from "./model-parameter-templates";
 
 /**
  * 变体表
@@ -16,9 +17,12 @@ export const variants = sqliteTable(
     modelId: text("model_id")
       .notNull()
       .references(() => models.id, { onDelete: "cascade" }),
+    parameterTemplateId: text("parameter_template_id")
+      .references(() => modelParameterTemplates.id, { onDelete: "set null" }),
     description: text("description"),
 
     // 参数配置（DESIGN 拆三字段而非 JSON）
+    paramDefaults: text("param_defaults"),
     paramOverrides: text("param_overrides"),
     paramBlocked: text("param_blocked"),
     fieldMapping: text("field_mapping"),
@@ -27,6 +31,11 @@ export const variants = sqliteTable(
 
     // 业务适配器配置（adapter 私有配置，仍走 JSON）
     adapterConfig: text("adapter_config"),
+    adapterConfigStatus: text("adapter_config_status", {
+      enum: ["unvalidated", "valid", "invalid"],
+    }).notNull().default("unvalidated"),
+    adapterConfigReason: text("adapter_config_reason"),
+    adapterConfigValidatedAt: integer("adapter_config_validated_at", { mode: "timestamp" }),
 
     // 能力限制
     maxContext: integer("max_context"),

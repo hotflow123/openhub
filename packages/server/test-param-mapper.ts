@@ -39,6 +39,30 @@ test("applies blocked fields before forced overrides", () => {
   assert.deepEqual(result.dropped, []);
 });
 
+test("applies template defaults before variant overrides without changing caller values", () => {
+  const result = mapStoredVariantParams(
+    {
+      model: "variant",
+      aspect_ratio: "9:16",
+      reference_image_urls: ["https://example.test/a.png"],
+    },
+    {
+      paramOverrides: JSON.stringify({ resolution: "1080p" }),
+      fieldMapping: JSON.stringify({ reference_image_urls: "image_urls" }),
+    },
+    ["model", "aspect_ratio", "resolution", "image_urls"],
+    { paramDefaults: { aspect_ratio: "16:9", resolution: "720p", duration: 5 } },
+  );
+
+  assert.deepEqual(result.body, {
+    model: "variant",
+    aspect_ratio: "9:16",
+    resolution: "1080p",
+    duration: 5,
+    image_urls: ["https://example.test/a.png"],
+  });
+});
+
 test("OpenAI adapter preserves mapped JSON fields for image, audio, and embedding", async () => {
   const originalFetch = globalThis.fetch;
   const requests: Array<{ url: string; body: Record<string, unknown> }> = [];

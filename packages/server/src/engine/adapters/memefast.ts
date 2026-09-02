@@ -5,6 +5,7 @@ import {
   type ChatRequest as MemeFastChatRequest,
   type EmbeddingRequest as MemeFastEmbeddingRequest,
   type ImageGenerationRequest as MemeFastImageRequest,
+  type VideoSubmitRequest as MemeFastVideoSubmitRequest,
 } from "@openhub/memefast";
 import type {
   Adapter,
@@ -14,19 +15,27 @@ import type {
   EmbeddingRequest,
   ForwardContext,
   ImageGenerationRequest,
+  VideoQueryResult,
+  VideoSubmitRequest,
+  VideoSubmitResult,
 } from "../adapter";
 
 type Connector = ReturnType<typeof createMemeFastConnector>;
 const connectorCache = new Map<string, { apiKey: string; client: Connector }>();
 
 function connector(ctx: ForwardContext) {
-  const cached = connectorCache.get(ctx.targetUrl);
+  const videoConfig = ctx.config?.video && typeof ctx.config.video === "object" && !Array.isArray(ctx.config.video)
+    ? ctx.config.video as { protocol?: string }
+    : undefined;
+  const cacheKey = `${ctx.targetUrl}:${videoConfig?.protocol ?? "auto"}`;
+  const cached = connectorCache.get(cacheKey);
   if (cached?.apiKey === ctx.apiKey) return cached.client;
   const client = createMemeFastConnector({
     baseUrl: ctx.targetUrl,
     apiKey: ctx.apiKey,
+    video: videoConfig as { protocol?: import("@openhub/memefast").MemeFastVideoProtocol } | undefined,
   });
-  connectorCache.set(ctx.targetUrl, { apiKey: ctx.apiKey, client });
+  connectorCache.set(cacheKey, { apiKey: ctx.apiKey, client });
   return client;
 }
 
@@ -40,7 +49,18 @@ export const memefastAdapter: Adapter = {
     "image.generation",
     "audio.speech",
     "audio.transcription",
+    "video.submit",
+    "video.query",
   ],
+
+  validateConfig(config, modality) {
+    if (modality !== "video") return null;
+    const protocol = (config?.video as { protocol?: unknown } | undefined)?.protocol;
+    if (protocol === undefined) return "A verified MemeFast video protocol is required";
+    return ["veo", "openai", "seedance", "kling", "vidu", "pixverse", "minimax", "luma"].includes(String(protocol))
+      ? null
+      : `Unsupported MemeFast video protocol: ${String(protocol)}`;
+  },
 
   async discoverModels(ctx: ForwardContext) {
     const models = await connector(ctx).discover();
@@ -77,6 +97,14 @@ export const memefastAdapter: Adapter = {
 
   async forwardAudioTranscription(req: AudioTranscriptionRequest, ctx: ForwardContext) {
     return connector(ctx).audioTranscription(req as unknown as MemeFastAudioTranscriptionRequest);
+  },
+
+  async submitVideoTask(req: VideoSubmitRequest, ctx: ForwardContext): Promise<VideoSubmitResult> {
+    return await connector(ctx).videoSubmit(req as unknown as MemeFastVideoSubmitRequest) as unknown as VideoSubmitResult;
+  },
+
+  async queryVideoTask(siteTaskId: string, ctx: ForwardContext): Promise<VideoQueryResult> {
+    return await connector(ctx).videoQuery(siteTaskId, ctx.model) as unknown as VideoQueryResult;
   },
 
   async healthCheck(ctx: ForwardContext) {

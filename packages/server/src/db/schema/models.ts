@@ -82,6 +82,26 @@ export const models = sqliteTable(
     videoContractReason: text("video_contract_reason"),
     videoContractSyncedAt: integer("video_contract_synced_at", { mode: "timestamp" }),
 
+    // 来源中立的多模态能力契约与证据状态
+    capabilityContractSnapshot: text("capability_contract_snapshot"),
+    capabilityContractSource: text("capability_contract_source"),
+    capabilityContractStatus: text("capability_contract_status", {
+      enum: ["confirmed", "candidate", "partial", "unverified"],
+    }),
+    capabilityContractReason: text("capability_contract_reason"),
+    capabilityContractSyncedAt: integer("capability_contract_synced_at", { mode: "timestamp" }),
+    modelIdentityStatus: text("model_identity_status", {
+      enum: ["recognized", "ambiguous", "unmatched"],
+    }),
+    modelIdentitySource: text("model_identity_source"),
+    modelIdentityReason: text("model_identity_reason"),
+    adapterVersion: text("adapter_version"),
+    adapterHash: text("adapter_hash"),
+    adapterValidationStatus: text("adapter_validation_status", {
+      enum: ["ready", "invalid", "extension_required", "quarantined"],
+    }),
+    adapterValidationReason: text("adapter_validation_reason"),
+
     // 解析后的视频参数（来自 fal parameters）
     videoDurationEnum: text("video_duration_enum"),  // JSON array, e.g. ["auto","4","5",...,"30"]
     videoAspectRatios: text("video_aspect_ratios"), // JSON array, e.g. ["16:9","9:16","1:1",...]

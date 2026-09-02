@@ -484,7 +484,7 @@ const KEYWORD_RULES: Array<{
 探测策略（全局配置项）：
 - `probe_mode: 'none'`（默认）— 不探测，未知模型标记为 `unknown`，等待向导配置。
 - `probe_mode: 'safe'` — 只读端点（`/v1/models/{id}`、HEAD 请求），不发送生成请求，无费用。
-- `probe_mode: 'full'` — 发送最小生成请求（1 token LLM / 64px 图片 / 1s 视频），可能产生费用，需谨慎开启。
+- `probe_mode: 'full'` — 仅允许逐个模型、明确确认后发送最小实际请求（LLM / 图片 / 音频 / 视频）；批量探测不得使用该模式，可能产生费用或创建任务。
 
 探测应设计为**幂等**、**低费用**的请求，结果写入 `suggested_*` 字段，仍需管理员确认。
 
@@ -1026,7 +1026,8 @@ CREATE TABLE variants (
   description     TEXT,
 
   -- 参数配置（JSON）
-  param_overrides TEXT,    -- 默认参数，调用方未传时使用
+  param_defaults  TEXT,    -- 模板/适配器默认值，仅调用方未传时使用
+  param_overrides TEXT,    -- 管理员强制覆盖值，无条件覆盖调用方
   param_blocked   TEXT,    -- 禁止使用的参数名列表
   field_mapping   TEXT,    -- 字段名映射 { hub字段: 站点字段 }
 
@@ -1345,8 +1346,8 @@ Step 2 — 移除 param_blocked（变体级）
   - "未设置"的定义：JSON.parse 后 Object.prototype.hasOwnProperty 为 false
   - 注意：null / false / 0 / "" 均视为"已设置"，不触发默认值填充
 
-Step 3 — 合并 param_defaults（适配器级，只填充未设置的字段）
-  - 来自 Adapter 的静态 defaultParams
+Step 3 — 合并 param_defaults（模板/适配器级，只填充未设置的字段）
+  - 来自已确认 Schema 模板或 Adapter 的默认值
   - 仅在 Step 2 之后字段不存在时注入
   - 不覆盖已有值
 
@@ -1368,9 +1369,8 @@ Step 7 — 值转换（field_transforms）
 
 Step 8 — 未知参数处理
   - OpenHub 已知的标准字段：允许透传
-  - 未知字段（不在 OpenAI 规范中）：默认丢弃
-  - 如需透传供应商扩展参数，调用方应放在 provider_options 中，
-    Adapter 负责将其解包并注入到站点请求
+  - 未知字段：必须进入受控 provider_options 并由 Adapter 白名单解包，
+    否则返回 unknown_parameter；不能静默丢弃
 
 输出：站点请求 body
 ```
@@ -1383,7 +1383,7 @@ Step 8 — 未知参数处理
 | 调用方传 `undefined` | JSON 序列化后字段消失，视为未设置，触发 param_defaults |
 | param_blocked 与 param_overrides 同名 | Step 2 先删，Step 4 再注入（最终存在） |
 | field_mapping 后字段名与 param_blocked 中原名冲突 | 不冲突，blocked 在 rename 之前执行 |
-| 调用方传了不在任何 allowed 列表的字段 | Step 8 丢弃，不报错，不透传 |
+| 调用方传了不在任何 allowed 列表的字段 | 放入受控 provider_options，否则返回 unknown_parameter |
 
 ---
 

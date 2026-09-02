@@ -12,6 +12,8 @@ export default defineConfig({
     "./src/db/schema/audit.ts",
     "./src/db/schema/users.ts",
     "./src/db/schema/variant_groups.ts",
+    "./src/db/schema/model-capability-probes.ts",
+    "./src/db/schema/model-parameter-templates.ts",
   ],
   out: "./drizzle",
   dialect: "sqlite",

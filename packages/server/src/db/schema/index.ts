@@ -8,3 +8,5 @@ export * from "./audit";
 export * from "./users";
 export * from "./variant_groups";
 export * from "./schema-catalog";
+export * from "./model-capability-probes";
+export * from "./model-parameter-templates";

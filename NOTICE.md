@@ -60,6 +60,13 @@ The built-in snapshot (`catalog-snapshot.json`) is generated from `models.json` 
 
 ## Other Dependencies
 
+## Open-Generative-AI
+
+- **Repository**: https://github.com/Anil-matcha/Open-Generative-AI
+- **License**: MIT
+- **Used by**: versioned parameter-template snapshot generated from `packages/studio/src/models.js`
+- **Boundary**: source endpoint values are retained as hints only and are never used as OpenHub execution routes.
+
 OpenHub uses many open-source npm packages. See `pnpm-lock.yaml` for the complete dependency tree and their respective licenses.
 
 Key dependencies:

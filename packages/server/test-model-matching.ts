@@ -29,7 +29,7 @@ const candidates = [
   },
 ];
 
-function fakeMatcherDb(rows = candidates): MatcherDb {
+function fakeMatcherDb(rows = candidates, alias?: { catalogId: string; aliasType: string }): MatcherDb {
   return {
     async findCatalogById() {
       return undefined;
@@ -38,13 +38,24 @@ function fakeMatcherDb(rows = candidates): MatcherDb {
       return undefined;
     },
     async findCatalogAlias() {
-      return undefined;
+      return alias;
     },
     async findCatalogCandidates() {
       return rows;
     },
   };
 }
+
+test("preserves alias evidence for downstream identity decisions", async () => {
+  const result = await matchModel(
+    fakeMatcherDb(candidates, { catalogId: "bytedance-seed/seed-2.0-code", aliasType: "provider_id" }),
+    "seed-2-0-code",
+    { modality: "llm" },
+  );
+
+  assert.equal(result.source, "alias");
+  assert.equal(result.aliasType, "provider_id");
+});
 
 test("normalizes split numeric versions and ignores date suffixes", () => {
   assert.equal(extractModelVersion("doubao-seedream-5-0-pro-260628"), "5");

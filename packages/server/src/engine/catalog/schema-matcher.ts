@@ -24,6 +24,11 @@ import {
   rankModelCandidates,
   type ModelIdentityCandidate,
 } from "@openhub/catalog/matcher";
+import { extractInputSchemaCapabilities } from "../../lib/fal-input-schema";
+import { getAdapter, normalizeAdapterId } from "../adapter";
+import { getProviderAdapterRegistration, type AdapterRegistration } from "../adapter-manifest";
+import type { ModelRow } from "../../db/schema/models";
+import type { NormalizedParameterTemplate, ParameterField } from "@openhub/catalog/parameter-template";
 
 export interface SchemaCatalogCandidate {
   endpointId: string;
@@ -31,6 +36,9 @@ export interface SchemaCatalogCandidate {
   modality: string;
   pricing: string | null;
   parameters: string | null;
+  inputSchema: string | null;
+  outputSchema: string | null;
+  description: string | null;
   falCategory: string | null;
   falSource: string | null;
 }
@@ -55,6 +63,9 @@ export interface SchemaMatchResult {
     default?: unknown;
     enum?: unknown[];
   }>;
+  inputSchema: string | null;
+  outputSchema: string | null;
+  description: string | null;
   /** fal category */
   falCategory: string | null;
   /** fal source（queue/realtime） */
@@ -69,6 +80,154 @@ export interface SchemaMatchResult {
 export interface SchemaMatchOptions {
   modality?: string | null;
   candidates?: readonly SchemaCatalogCandidate[];
+  adapterCapabilities?: readonly string[];
+}
+
+export interface SchemaTemplateCompatibility {
+  decision: "confirmed" | "candidate" | "incompatible";
+  templateId: string | null;
+  operations: string[];
+  fieldMapping: Record<string, string>;
+  overridableFields: string[];
+  requiredFields: string[];
+  unmappedRequiredFields: string[];
+  unsupportedFields: string[];
+  reasons: string[];
+}
+
+/** Convert the legacy Fal row into the source-neutral template shape. */
+export function falSchemaToParameterTemplate(schema: SchemaCatalogCandidate): NormalizedParameterTemplate {
+  const parameters = parseParameters(schema.parameters);
+  const inputs: Record<string, ParameterField> = {};
+  for (const parameter of parameters) inputs[parameter.name] = { ...parameter, type: parameter.type === "int" ? "integer" : parameter.type };
+  const category = schema.falCategory ?? "";
+  const operation = category.includes("image-to-image") ? "image.image_to_image"
+    : category.includes("text-to-image") ? "image.text_to_image"
+      : category.includes("image-to-video") ? "video.image_to_video"
+        : category.includes("video-to-video") ? "video.video_to_video"
+          : category.includes("text-to-video") ? "video.text_to_video"
+            : schema.modality === "audio" ? "audio.source" : `${schema.modality}.source`;
+  return {
+    sourceModelId: schema.endpointId,
+    sourceCollection: "fal_schema",
+    sourceIndex: 0,
+    operation,
+    modality: schema.modality as NormalizedParameterTemplate["modality"],
+    provider: "fal-ai",
+    providerName: "fal.ai",
+    endpointHint: schema.endpointId,
+    inputs,
+    required: parameters.filter((parameter) => parameter.required).map((parameter) => parameter.name),
+    provenance: { sourceCommit: "", file: "fal_model_encyclopedia.json", collection: "model_schema_catalog", index: 0 },
+  };
+}
+
+const CANONICAL_TEMPLATE_FIELDS = new Set([
+  "model", "prompt", "content", "duration", "aspect_ratio", "resolution", "size", "quality", "style",
+  "image", "mask", "image_url", "image_urls", "video_url", "video_urls", "audio_url", "audio_urls",
+  "reference_image_url", "reference_image_urls", "reference_video_url", "reference_video_urls",
+  "reference_audio_url", "reference_audio_urls", "generate_audio", "input", "voice", "file", "n",
+  "response_format", "speed", "language", "temperature", "seed", "provider_options",
+]);
+
+export function evaluateSchemaTemplateCompatibility(input: {
+  model: ModelRow;
+  schema: SchemaCatalogCandidate;
+  registration?: AdapterRegistration | null;
+  protocolId?: string | null;
+  schemaConfirmed?: boolean;
+}): SchemaTemplateCompatibility {
+  const reasons: string[] = [];
+  const requiredFields = parseParameters(input.schema.parameters)
+    .filter((parameter) => parameter.required)
+    .map((parameter) => parameter.name);
+  const fieldMapping: Record<string, string> = {};
+  const overridableFields: string[] = [];
+  const unsupportedFields: string[] = [];
+  const unmappedRequiredFields: string[] = [];
+  const registration = input.registration ?? null;
+  const adapterCapabilities = registration?.manifest.capabilities ?? [];
+
+  if (!registration) {
+    return {
+      decision: "incompatible",
+      templateId: null,
+      operations: [],
+      fieldMapping,
+      overridableFields,
+      requiredFields,
+      unmappedRequiredFields: requiredFields,
+      unsupportedFields,
+      reasons: ["adapter_registration_missing"],
+    };
+  }
+  if (input.schema.modality !== input.model.modality) reasons.push("schema_model_modality_mismatch");
+  if (!adapterSupportsSchema(input.schema.modality, adapterCapabilities)) reasons.push("adapter_does_not_support_schema_modality");
+  if (!hasSchemaContract(input.schema)) reasons.push("schema_input_contract_missing");
+
+  const bindings = (registration.manifest.templateBindings ?? []).filter((candidate) => candidate.modality === input.schema.modality);
+  const binding = bindings.length > 1 && input.schema.modality === "video" && !input.protocolId
+    ? undefined
+    : bindings.find((candidate) => !input.protocolId || candidate.id === input.protocolId);
+  if (!binding) {
+    reasons.push(input.protocolId
+      ? "requested_template_binding_missing"
+      : input.schema.modality === "video" && bindings.length > 1
+        ? "video_protocol_binding_required"
+        : "adapter_template_binding_missing");
+  }
+
+  const operations = binding?.operations ?? [];
+  const declaredFields = binding?.fields ?? {};
+  for (const parameter of parseParameters(input.schema.parameters)) {
+    const mapping = declaredFields[parameter.name];
+    if (mapping) {
+      fieldMapping[parameter.name] = mapping.target;
+      if (mapping.overridable) overridableFields.push(parameter.name);
+      continue;
+    }
+    if (CANONICAL_TEMPLATE_FIELDS.has(parameter.name)) {
+      fieldMapping[parameter.name] = parameter.name;
+      if (["duration", "aspect_ratio", "resolution", "content", "image_url", "image_urls", "video_url", "video_urls", "audio_url", "audio_urls"].includes(parameter.name)) {
+        overridableFields.push(parameter.name);
+      }
+      continue;
+    }
+    unsupportedFields.push(parameter.name);
+    if (parameter.required) unmappedRequiredFields.push(parameter.name);
+  }
+
+  if (binding && input.schema.modality === "video" && (!operations.includes("video.submit") || !operations.includes("video.query"))) {
+    reasons.push("video_submit_query_lifecycle_missing");
+  }
+  if (unmappedRequiredFields.length > 0) reasons.push("required_schema_fields_unmapped");
+  if (unsupportedFields.length > 0) reasons.push("schema_fields_need_provider_options_or_adapter_mapping");
+  if (input.schemaConfirmed === false) reasons.push("schema_identity_not_confirmed");
+
+  const incompatible = reasons.includes("schema_model_modality_mismatch")
+    || reasons.includes("adapter_does_not_support_schema_modality")
+    || reasons.includes("schema_input_contract_missing")
+    || reasons.includes("adapter_registration_missing")
+    || reasons.includes("video_submit_query_lifecycle_missing")
+    || reasons.includes("requested_template_binding_missing")
+    || unmappedRequiredFields.length > 0;
+  const decision = incompatible
+    ? "incompatible"
+    : reasons.length === 0 && (input.schemaConfirmed ?? true) && Boolean(binding)
+      ? "confirmed"
+      : "candidate";
+
+  return {
+    decision,
+    templateId: binding?.id ?? null,
+    operations,
+    fieldMapping,
+    overridableFields: Array.from(new Set(overridableFields)),
+    requiredFields,
+    unmappedRequiredFields,
+    unsupportedFields: Array.from(new Set(unsupportedFields)),
+    reasons: reasons.length > 0 ? reasons : ["template_compatible"],
+  };
 }
 
 /**
@@ -104,6 +263,9 @@ export async function loadSchemaCandidates(): Promise<SchemaCatalogCandidate[]> 
       modality: modelSchemaCatalog.modality,
       pricing: modelSchemaCatalog.pricing,
       parameters: modelSchemaCatalog.parameters,
+      inputSchema: modelSchemaCatalog.inputSchema,
+      outputSchema: modelSchemaCatalog.outputSchema,
+      description: modelSchemaCatalog.description,
       falCategory: modelSchemaCatalog.falCategory,
       falSource: modelSchemaCatalog.falSource,
     })
@@ -137,6 +299,7 @@ function buildSchemaMatch(
     aliasSource: string;
     confidence: SchemaMatchResult["confidence"];
     reason: string;
+    status: SchemaMatchResult["status"];
   },
 ): SchemaMatchResult {
   return {
@@ -146,13 +309,30 @@ function buildSchemaMatch(
     modality: schemaRow.modality,
     pricing: schemaRow.pricing,
     parameters: parseParameters(schemaRow.parameters),
+    inputSchema: schemaRow.inputSchema,
+    outputSchema: schemaRow.outputSchema,
+    description: schemaRow.description,
     falCategory: schemaRow.falCategory,
     falSource: schemaRow.falSource,
-    status: "candidate",
+    status: metadata.status,
     confidence: metadata.confidence,
     reason: metadata.reason,
     aliasSource: metadata.aliasSource,
   };
+}
+
+function adapterSupportsSchema(modality: string, capabilities: readonly string[] | undefined): boolean {
+  if (!capabilities) return true;
+  if (modality === "video") return capabilities.includes("video.submit") && capabilities.includes("video.query");
+  if (modality === "image") return capabilities.some((capability) => capability.startsWith("image."));
+  if (modality === "audio") return capabilities.some((capability) => capability.startsWith("audio."));
+  if (modality === "embedding") return capabilities.includes("embedding");
+  if (modality === "llm") return capabilities.includes("chat");
+  return false;
+}
+
+function hasSchemaContract(row: SchemaCatalogCandidate): boolean {
+  return Boolean(row.inputSchema || row.parameters);
 }
 
 function modalityMatches(queryModality: string | null | undefined, schema: SchemaCatalogCandidate): boolean {
@@ -195,15 +375,22 @@ export async function matchSchema(
     const manuallyCurated = aliasRow.source !== "fal-ai" || aliasRow.aliasType === "manual";
     const exactEndpoint =
       aliasRow.source === "fal-ai" && normalize(aliasRow.alias) === normalize(schemaRow.endpointId);
+    const identityConfirmed = manuallyCurated || exactEndpoint;
+    const compatible = modalityMatches(options.modality, schemaRow)
+      && adapterSupportsSchema(schemaRow.modality, options.adapterCapabilities)
+      && hasSchemaContract(schemaRow);
     return buildSchemaMatch(schemaRow, {
       aliasType: aliasRow.aliasType,
       aliasSource: aliasRow.source,
       confidence: manuallyCurated || exactEndpoint ? "high" : "medium",
-      reason: manuallyCurated
-        ? "curated_alias_needs_review"
-        : exactEndpoint
-          ? "exact_endpoint_alias_needs_review"
-          : "exact_generated_alias_needs_review",
+      status: identityConfirmed && compatible ? "confirmed" : "candidate",
+      reason: !compatible
+        ? "schema_adapter_or_contract_incompatible"
+        : manuallyCurated
+          ? "curated_alias_applied"
+          : exactEndpoint
+            ? "exact_endpoint_applied"
+            : "exact_generated_alias_needs_review",
     });
   }
 
@@ -221,14 +408,21 @@ export async function matchSchema(
     best.score >= 0.78 ? "high" : best.score >= 0.62 ? "medium" : "low";
   const reason = margin < 0.06 ? "model_identity_match_ambiguous" : "model_identity_match";
   const schemaRow = rowsByEndpoint.get(best.candidate.id);
-  return schemaRow
-    ? buildSchemaMatch(schemaRow, {
+  if (!schemaRow) return null;
+  const identityConfirmed = best.score >= 0.94 && margin >= 0.06;
+  const compatible = adapterSupportsSchema(schemaRow.modality, options.adapterCapabilities)
+    && hasSchemaContract(schemaRow);
+  return buildSchemaMatch(schemaRow, {
         aliasType: "inference",
         aliasSource: "model-identity",
         confidence,
-        reason,
-      })
-    : null;
+        status: identityConfirmed && compatible ? "confirmed" : "candidate",
+        reason: !compatible
+          ? "schema_adapter_or_contract_incompatible"
+          : identityConfirmed
+            ? "strong_model_identity_applied"
+            : reason,
+      });
 }
 
 /**
@@ -249,6 +443,7 @@ export async function matchSchemasForSite(
       schemaMatchStatus: models.schemaMatchStatus,
       schemaMatchConfidence: models.schemaMatchConfidence,
       schemaMatchReason: models.schemaMatchReason,
+      adapterId: models.adapterId,
     })
     .from(models)
     .where(eq(models.siteId, siteId));
@@ -313,22 +508,67 @@ export async function matchSchemasForSite(
     const result = await matchSchema(model.rawName, {
       modality: model.modality,
       candidates: schemaCandidates,
+      adapterCapabilities: getAdapter(normalizeAdapterId(model.adapterId) ?? model.adapterId)?.capabilities ?? [],
     });
 
     if (result) {
+      const adapterId = normalizeAdapterId(model.adapterId) ?? model.adapterId;
+      const registration = getProviderAdapterRegistration(adapterId);
+      const templateCompatibility = registration
+        ? evaluateSchemaTemplateCompatibility({
+          model: model as ModelRow,
+          schema: schemaCandidates.find((candidate) => candidate.endpointId === result.endpointId) ?? {
+            endpointId: result.endpointId,
+            title: result.title ?? result.endpointId,
+            modality: result.modality ?? model.modality,
+            pricing: result.pricing,
+            parameters: result.parameters.length > 0 ? JSON.stringify(result.parameters) : null,
+            inputSchema: result.inputSchema,
+            outputSchema: result.outputSchema,
+            description: result.description,
+            falCategory: result.falCategory,
+            falSource: result.falSource,
+          },
+          registration,
+          schemaConfirmed: result.status === "confirmed",
+        })
+        : null;
+      const templateDecision = templateCompatibility?.decision ?? result.status;
+      const templateReason = templateCompatibility?.reasons.join(",") ?? result.reason;
+      const capabilities = extractInputSchemaCapabilities(result.inputSchema, result.parameters.length > 0 ? JSON.stringify(result.parameters) : null);
+      const durationValues = result.parameters.find((parameter) => parameter.name === "duration")?.enum ?? [];
+      const requiredParams = result.parameters.filter((parameter) => parameter.required).map((parameter) => parameter.name);
+      const optionalParams = result.parameters.filter((parameter) => !parameter.required).map((parameter) => parameter.name);
+      const numericDurations = durationValues.map(Number).filter((value) => Number.isFinite(value) && value > 0);
       await db
         .update(models)
         .set({
-          ...(result.status === "confirmed" ? {} : clearUnconfirmedSchemaCapabilities()),
-          ...(result.status === "confirmed"
+          ...(templateDecision === "confirmed"
+            ? {
+              falParametersSnapshot: result.parameters.length > 0 ? JSON.stringify(result.parameters) : null,
+              falInputSchemaSnapshot: result.inputSchema,
+              falDescription: result.description,
+              falPricing: result.pricing,
+              falSource: result.falSource,
+              videoDurationEnum: durationValues.length > 0 ? JSON.stringify(durationValues.map(String)) : null,
+              videoRequiredParams: requiredParams.length > 0 ? JSON.stringify(requiredParams) : null,
+              videoOptionalParams: optionalParams.length > 0 ? JSON.stringify(optionalParams) : null,
+              maxDurationSec: numericDurations.length > 0 ? Math.max(...numericDurations) : undefined,
+              maxReferenceImages: capabilities.maxReferenceImages,
+              maxReferenceVideos: capabilities.maxReferenceVideos,
+              maxReferenceAudios: capabilities.maxReferenceAudios,
+              schemaSyncedAt: new Date(),
+            }
+            : clearUnconfirmedSchemaCapabilities()),
+          ...(templateDecision === "confirmed"
             ? {}
             : { falParametersSnapshot: result.parameters.length ? JSON.stringify(result.parameters) : null }),
           schemaEndpointId: result.endpointId,
           schemaMatchSource: result.aliasType,
-          schemaMatchStatus: result.status,
+          schemaMatchStatus: templateDecision === "incompatible" ? "candidate" : templateDecision,
           schemaMatchConfidence: result.confidence,
-          schemaMatchReason: result.reason,
-          schemaSyncedAt: result.status === "confirmed" ? new Date() : null,
+          schemaMatchReason: templateReason,
+          schemaSyncedAt: templateDecision === "confirmed" ? new Date() : null,
           updatedAt: new Date(),
         })
         .where(eq(models.id, model.id));

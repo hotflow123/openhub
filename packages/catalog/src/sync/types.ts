@@ -13,4 +13,5 @@ export interface MatchResult {
   catalogModelId: string | null;
   confidence: number;
   source: "exact" | "normalized" | "alias" | "structured" | "fuzzy" | "keyword" | null;
+  aliasType?: string;
 }

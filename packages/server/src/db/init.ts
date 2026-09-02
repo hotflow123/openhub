@@ -17,6 +17,8 @@ const REQUIRED_TABLES = [
   "model_catalog_alias",
   "catalog_sync_runs",
   "tasks",
+  "model_capability_probes",
+  "model_parameter_templates",
 ];
 
 const REQUIRED_COLUMNS: Record<string, string[]> = {
@@ -34,14 +36,33 @@ const REQUIRED_COLUMNS: Record<string, string[]> = {
     "video_contract_status",
     "video_contract_reason",
     "video_contract_synced_at",
+    "capability_contract_snapshot",
+    "capability_contract_source",
+    "capability_contract_status",
+    "capability_contract_reason",
+    "capability_contract_synced_at",
+    "model_identity_status",
+    "model_identity_source",
+    "model_identity_reason",
+    "adapter_version",
+    "adapter_hash",
+    "adapter_validation_status",
+    "adapter_validation_reason",
   ],
   model_schema_alias: ["source"],
   variants: [
+    "param_defaults",
     "max_reference_images",
     "max_reference_videos",
     "max_reference_audios",
     "param_limits",
+    "adapter_config_status",
+    "adapter_config_reason",
+    "adapter_config_validated_at",
+    "parameter_template_id",
   ],
+  sites: ["config_revision"],
+  model_capability_probes: ["config_revision"],
 };
 
 const DB_URL = process.env.OPENHUB_DB_URL ?? "./data/openhub.db";

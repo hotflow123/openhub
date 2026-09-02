@@ -95,7 +95,7 @@ export const matcherDb: MatcherDb = {
   },
   async findCatalogAlias(normalized) {
     const [row] = await db
-      .select({ catalogId: modelCatalogAlias.catalogId })
+      .select({ catalogId: modelCatalogAlias.catalogId, aliasType: modelCatalogAlias.aliasType })
       .from(modelCatalogAlias)
       .where(eq(modelCatalogAlias.normalized, normalized))
       .orderBy(modelCatalogAlias.priority, modelCatalogAlias.catalogId)

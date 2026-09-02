@@ -18,10 +18,12 @@ const response = await client.chat({
 });
 ```
 
-The connector normalizes a base URL with or without `/v1`, validates the model list and standard operation responses, and never logs or returns the API key. Supported operations are model discovery, Chat, streaming Chat, Embedding, Image Generation, Audio Speech, and Audio Transcription.
+The connector normalizes a base URL with or without `/v1`, validates the model list and standard operation responses, and never logs or returns the API key. Supported operations are model discovery, Chat, streaming Chat, Embedding, Image Generation, Audio Speech, Audio Transcription, and verified-family Video submit/query tasks.
+
+Video protocols are selected from a verified family rule or `video.protocol` configuration. Supported families are `veo`, `openai`, `seedance`, `kling`, `vidu`, `pixverse`, `minimax`, and `luma`; unknown families fail closed instead of guessing an endpoint.
 
 Strict mode is the default. Unknown top-level parameters fail with a structured error; provider-specific values must be placed under `provider_options.memefast`. Catalog data can provide suggestions and parameter evidence, but does not override runtime capability evidence.
 
 Use this package from a backend. Do not put MemeFast API keys in browser storage or frontend code.
 
-For a read-only live check, set `MEMEFAST_TEST_BASE_URL` and `MEMEFAST_TEST_API_KEY`, then run `pnpm --filter @openhub/memefast smoke`. Billable Chat testing requires `MEMEFAST_SMOKE_ALLOW_BILLABLE=1` and optionally `MEMEFAST_TEST_CHAT_MODEL`.
+For a read-only live check, set `MEMEFAST_TEST_BASE_URL` and `MEMEFAST_TEST_API_KEY`, then run `pnpm --filter @openhub/memefast smoke`. Billable Chat testing requires `MEMEFAST_SMOKE_ALLOW_BILLABLE=1` and optionally `MEMEFAST_TEST_CHAT_MODEL`. Video testing additionally requires `MEMEFAST_TEST_VIDEO_MODEL` and the explicitly verified `MEMEFAST_TEST_VIDEO_PROTOCOL`; optional `MEMEFAST_TEST_VIDEO_DURATION` and `MEMEFAST_TEST_VIDEO_PROMPT` control the smallest legal request.

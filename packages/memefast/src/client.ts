@@ -17,7 +17,12 @@ import {
   type MemeFastCatalogEntry,
   type MemeFastConfig,
   type MemeFastConnector,
+  type MemeFastVideoProtocol,
   type ModelProfile,
+  type VideoQueryResult,
+  type VideoResult,
+  type VideoSubmitRequest,
+  type VideoSubmitResult,
 } from "./types.js";
 
 const OPERATION_FIELDS: Record<string, string[]> = {
@@ -34,6 +39,136 @@ const DEFAULT_CONTRACT: InputContract = {
   enums: {},
   defaults: {},
 };
+
+const VIDEO_PROTOCOLS: Record<MemeFastVideoProtocol, {
+  submitPath: string;
+  queryPath: string;
+  queryMethod: "GET" | "POST";
+}> = {
+  veo: { submitPath: "/v1/video/create", queryPath: "/v1/video/query", queryMethod: "POST" },
+  openai: { submitPath: "/v1/videos", queryPath: "/v1/videos/{id}", queryMethod: "GET" },
+  seedance: { submitPath: "/api/v3/contents/generations/tasks", queryPath: "/api/v3/contents/generations/tasks/{id}", queryMethod: "GET" },
+  kling: { submitPath: "/kling/v1/videos/text2video", queryPath: "/kling/v1/videos/text2video/{id}", queryMethod: "GET" },
+  vidu: { submitPath: "/ent/v2/text2video", queryPath: "/ent/v2/tasks/{id}", queryMethod: "GET" },
+  pixverse: { submitPath: "/openapi/v2/video/generate", queryPath: "/openapi/v2/video/{id}", queryMethod: "GET" },
+  minimax: { submitPath: "/minimax/v1/video_generation", queryPath: "/minimax/v1/query/video_generation", queryMethod: "GET" },
+  luma: { submitPath: "/luma/generations", queryPath: "/luma/generations/{id}", queryMethod: "GET" },
+};
+
+function videoRoot(baseUrl: string): string {
+  return new URL(baseUrl).origin;
+}
+
+function videoProtocol(config: MemeFastConfig["video"]): MemeFastVideoProtocol {
+  const explicit = config?.protocol;
+  if (explicit !== undefined) {
+    if (typeof explicit === "string" && explicit in VIDEO_PROTOCOLS) return explicit as MemeFastVideoProtocol;
+    throw new MemeFastError({ ...errorInfo("video_protocol_unverified", "video.protocol", `Unsupported MemeFast video protocol: ${String(explicit)}`) });
+  }
+  throw new MemeFastError({
+    ...errorInfo("video_protocol_unverified", "video.protocol", "An explicit verified video protocol is required"),
+  });
+}
+
+function videoRequestBody(requestBody: VideoSubmitRequest, protocol: MemeFastVideoProtocol): Record<string, unknown> {
+  const providerOptions = asObject(requestBody.provider_options);
+  const memefastOptions = asObject(providerOptions?.memefast);
+  const providerParameters = asObject(memefastOptions?.parameters) ?? {};
+  const { provider_options: _providerOptions, callback_url: _callbackUrl, idempotency_key: _idempotencyKey, ...body } = requestBody;
+  const withProviderParameters = { ...body, ...providerParameters };
+  if (protocol === "seedance") {
+    const { prompt, content, aspect_ratio, resolution, duration, ...rest } = withProviderParameters;
+    return {
+      ...rest,
+      content: content ?? (prompt ? [{ type: "text", text: prompt }] : undefined),
+      parameters: {
+        ...(typeof duration === "undefined" ? {} : { duration }),
+        ...(typeof aspect_ratio === "undefined" ? {} : { aspect_ratio }),
+        ...(typeof resolution === "undefined" ? {} : { resolution }),
+      },
+    };
+  }
+  if (protocol === "kling") {
+    const { model, ...rest } = withProviderParameters;
+    return { ...rest, model_name: model };
+  }
+  if (protocol === "vidu" && Array.isArray(withProviderParameters.content) && withProviderParameters.content.some((part) => part?.type === "image")) {
+    const { content, ...rest } = withProviderParameters;
+    return {
+      ...rest,
+      images: content.filter((part) => part.type === "image").map((part) => part.url).filter((url): url is string => typeof url === "string"),
+    };
+  }
+  return withProviderParameters;
+}
+
+function nestedValue(value: unknown, keys: string[]): unknown {
+  let current = value;
+  for (const key of keys) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
+}
+
+function firstString(value: unknown, paths: string[][]): string | undefined {
+  for (const path of paths) {
+    const candidate = nestedValue(value, path);
+    if (typeof candidate === "string" && candidate.trim()) return candidate;
+  }
+  return undefined;
+}
+
+function nestedString(value: unknown, keys: Set<string>, depth = 0): string | undefined {
+  if (depth > 6 || !value || typeof value !== "object") return undefined;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = nestedString(item, keys, depth + 1);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  const object = value as Record<string, unknown>;
+  for (const [key, item] of Object.entries(object)) {
+    if (keys.has(key) && typeof item === "string" && item.trim()) return item;
+  }
+  for (const item of Object.values(object)) {
+    const found = nestedString(item, keys, depth + 1);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function firstTaskId(value: unknown): string | undefined {
+  return firstString(value, [
+    ["id"], ["task_id"], ["request_id"], ["data", "id"], ["data", "task_id"],
+    ["data", "task", "id"], ["output", "task_id"], ["task", "id"],
+  ]);
+}
+
+function mapVideoStatus(value: unknown): VideoQueryResult["status"] {
+  const status = typeof value === "string" ? value.toLowerCase() : "processing";
+  if (["queued", "pending", "submitted", "waiting"].includes(status)) return "pending";
+  if (["running", "processing", "in_progress", "started", "active"].includes(status)) return "processing";
+  if (["succeeded", "success", "completed", "done", "finished"].includes(status)) return "completed";
+  if (["failed", "failure", "error", "cancelled", "canceled"].includes(status)) return "failed";
+  if (["timeout", "expired"].includes(status)) return "timeout";
+  return "processing";
+}
+
+function videoResult(value: unknown): VideoResult | undefined {
+  const videoUrl = firstString(value, [
+    ["video_url"], ["videoUrl"], ["url"], ["video", "url"], ["result", "video_url"],
+    ["result", "url"], ["data", "video_url"], ["data", "url"], ["data", "result", "url"],
+    ["output", "video_url"], ["output", "url"], ["content", "url"], ["task", "content", "url"],
+  ]) ?? nestedString(value, new Set(["video_url", "videoUrl", "url"]));
+  if (!videoUrl) return undefined;
+  return {
+    video_url: videoUrl,
+    ...(typeof nestedValue(value, ["duration"]) === "number" ? { duration: nestedValue(value, ["duration"]) as number } : {}),
+    ...(typeof nestedValue(value, ["resolution"]) === "string" ? { resolution: nestedValue(value, ["resolution"]) as string } : {}),
+  };
+}
 
 function asObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -96,8 +231,20 @@ function validateProviderOptions(value: unknown, operation: string): void {
   if (!options) {
     throw new MemeFastError({ ...errorInfo("invalid_parameter", operation, "provider_options must be an object") });
   }
+  for (const key of Object.keys(options)) {
+    if (key !== "memefast") {
+      throw new MemeFastError({ ...errorInfo("unknown_parameter", operation, `Unsupported provider_options namespace: ${key}`) });
+    }
+  }
   if (options.memefast !== undefined && !asObject(options.memefast)) {
     throw new MemeFastError({ ...errorInfo("invalid_parameter", operation, "provider_options.memefast must be an object") });
+  }
+  const memefast = asObject(options.memefast);
+  if (memefast?.parameters !== undefined && !asObject(memefast.parameters)) {
+    throw new MemeFastError({ ...errorInfo("invalid_parameter", operation, "provider_options.memefast.parameters must be an object") });
+  }
+  if (JSON.stringify(value).length > 32_000) {
+    throw new MemeFastError({ ...errorInfo("invalid_parameter", operation, "provider_options is too large") });
   }
 }
 
@@ -295,6 +442,54 @@ export function createMemeFastConnector(config: MemeFastConfig): MemeFastConnect
         throw new MemeFastError({ ...errorInfo("invalid_response", "audio.transcription", "MemeFast transcription response is missing text", { requestId: requestIdFrom(response) }) });
       }
       return object as AudioTranscriptionResponse;
+    },
+    async videoSubmit(requestBody) {
+      const modelId = typeof requestBody.model === "string" ? requestBody.model : "";
+      if (!modelId.trim()) {
+        throw new MemeFastError({ ...errorInfo("missing_parameter", "video.submit", "model is required") });
+      }
+      const providerOptions = asObject(requestBody.provider_options);
+      const memefastOptions = asObject(providerOptions?.memefast);
+      if (memefastOptions?.video_protocol !== undefined) {
+        throw new MemeFastError({ ...errorInfo("video_protocol_unverified", "video.protocol", "Video protocol must be configured on the verified variant") });
+      }
+      const protocol = videoProtocol(config.video);
+      const definition = VIDEO_PROTOCOLS[protocol];
+      const response = await request(`${videoRoot(baseUrl)}${definition.submitPath}`, config.apiKey, "video.submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(videoRequestBody(requestBody, protocol)),
+      }, timeoutMs);
+      const object = responseObject(await readResponseBody(response), "video.submit", response);
+      const taskId = firstTaskId(object);
+      if (!taskId) {
+        throw new MemeFastError({ ...errorInfo("invalid_response", "video.submit", "MemeFast video response is missing a task id", { requestId: requestIdFrom(response) }) });
+      }
+      const initialStatus = mapVideoStatus(firstString(object, [["status"], ["data", "status"], ["output", "task_status"]]));
+      return {
+        siteTaskId: taskId,
+        initialStatus: initialStatus === "completed" || initialStatus === "failed" || initialStatus === "timeout" ? "processing" : initialStatus,
+        rawResult: object,
+      } satisfies VideoSubmitResult;
+    },
+    async videoQuery(siteTaskId, modelId) {
+      if (!modelId?.trim()) {
+        throw new MemeFastError({ ...errorInfo("missing_parameter", "video.query", "model is required to resolve the MemeFast video protocol") });
+      }
+      const protocol = videoProtocol(config.video);
+      const definition = VIDEO_PROTOCOLS[protocol];
+      const path = definition.queryPath.replace("{id}", encodeURIComponent(siteTaskId));
+      const url = `${videoRoot(baseUrl)}${path}${protocol === "minimax" ? `${path.includes("?") ? "&" : "?"}task_id=${encodeURIComponent(siteTaskId)}` : ""}`;
+      const response = await request(url, config.apiKey, "video.query", {
+        method: definition.queryMethod,
+        headers: { Accept: "application/json", ...(definition.queryMethod === "POST" ? { "Content-Type": "application/json" } : {}) },
+        ...(definition.queryMethod === "POST" ? { body: JSON.stringify({ task_id: siteTaskId, id: siteTaskId }) } : {}),
+      }, timeoutMs);
+      const object = responseObject(await readResponseBody(response), "video.query", response);
+      const status = mapVideoStatus(firstString(object, [["status"], ["task_status"], ["data", "status"], ["data", "task_status"], ["output", "task_status"], ["task", "status"]]) ?? nestedString(object, new Set(["status", "task_status"])));
+      const result = videoResult(object);
+      const error = firstString(object, [["error", "message"], ["message"], ["data", "message"], ["output", "message"]]);
+      return { status, ...(result ? { result } : {}), ...(error && status === "failed" ? { error } : {}), raw: object };
     },
   };
 }

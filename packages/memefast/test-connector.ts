@@ -84,3 +84,43 @@ test("supports stream, binary speech, and multipart transcription", async () => 
   assert.equal(calls[1]?.body && typeof calls[1].body === "string", true);
   assert.equal(calls[3]?.body instanceof FormData, true);
 });
+
+test("routes verified MemeFast video families and normalizes task responses", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = async (input, init) => {
+    requests.push({ url: String(input), init });
+    const url = String(input);
+    if (url.endsWith("/v1/video/create")) return Response.json({ task_id: "veo-task", status: "queued" });
+    if (url.endsWith("/v1/video/query")) return Response.json({ task: { status: "succeeded", content: { url: "https://example.test/veo.mp4" } } });
+    if (url.endsWith("/kling/v1/videos/text2video")) return Response.json({ data: { task_id: "kling-task", task_status: "submitted" } });
+    if (url.includes("/kling/v1/videos/text2video/")) return Response.json({ data: { task_status: "succeed", task_result: { videos: [{ url: "https://example.test/kling.mp4" }] } } });
+    return Response.json({ id: "openai-task", status: "queued" });
+  };
+  try {
+    const connector = createMemeFastConnector({ baseUrl: "https://api.memefast.test/v1openai0", apiKey: "secret", video: { protocol: "veo" } });
+    const veo = await connector.videoSubmit({ model: "veo_3_1-fast", prompt: "hello", duration: 5 });
+    assert.equal(veo.siteTaskId, "veo-task");
+    const veoResult = await connector.videoQuery(veo.siteTaskId, "veo_3_1-fast");
+    assert.equal(veoResult.status, "completed");
+    assert.equal(veoResult.result?.video_url, "https://example.test/veo.mp4");
+
+    const klingConnector = createMemeFastConnector({ baseUrl: "https://api.memefast.test/v1openai0", apiKey: "secret", video: { protocol: "kling" } });
+    const kling = await klingConnector.videoSubmit({ model: "kling-3.0-turbo", prompt: "hello" });
+    assert.equal(kling.siteTaskId, "kling-task");
+    const klingResult = await klingConnector.videoQuery(kling.siteTaskId, "kling-3.0-turbo");
+    assert.equal(klingResult.result?.video_url, "https://example.test/kling.mp4");
+
+    const unconfigured = createMemeFastConnector({ baseUrl: "https://api.memefast.test/v1openai0", apiKey: "secret" });
+    await assert.rejects(
+      () => unconfigured.videoSubmit({ model: "unknown-family", prompt: "hello" }),
+      (error: unknown) => error instanceof MemeFastError && error.info.code === "video_protocol_unverified",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(requests[0]?.url, "https://api.memefast.test/v1/video/create");
+  assert.equal(requests[1]?.url, "https://api.memefast.test/v1/video/query");
+  assert.equal(JSON.parse(String(requests[1]?.init?.body)).task_id, "veo-task");
+  assert.equal(requests[2]?.url, "https://api.memefast.test/kling/v1/videos/text2video");
+});

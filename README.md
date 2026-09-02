@@ -1,22 +1,32 @@
 # OpenHub 跑通手册（本地终端执行）
 
-> 本文档配合 `F:\code\测试\DESIGN.md` 第 17 章执行计划使用。
-> 由于沙箱无法执行命令，下面所有命令请在本地 PowerShell / 终端运行。
+OpenHub 是一个多模态模型接入运行时，统一承载 LLM、Embedding、图片、音频和异步视频请求；供应商差异由源码内受审查的适配器处理，不能通过网页填写任意请求路径或脚本。
+
+> 本文档配合仓库根目录 `DESIGN.md` 和 `EXECUTION-PLAN-MULTIMODAL-ADAPTER-SDK.md` 使用。
+> 当前支持边界、适配器 SDK 和外部接入方式分别见 `docs/MULTIMODAL-PROVIDER-EVIDENCE.md`、`docs/ADAPTER-SDK.md` 和 `docs/MULTIMODAL-INTEGRATION.md`。
 
 ---
 
 ## 0. 前置要求
 
-- Node.js >= 22
-- pnpm >= 9（如未安装：`npm i -g pnpm`）
+- Node.js 22.x（项目根目录 `.node-version` 为事实来源；Node 24 不属于支持范围）
+- pnpm `10.4.1`（优先使用 Corepack；项目根目录 `packageManager` 已固定版本）
 - 一个可访问的 New API 站点（用于联调）
+
+基线验证命令：
+
+```powershell
+pnpm typecheck
+pnpm test
+pnpm --filter @openhub/web build
+```
 
 ---
 
 ## 1. 安装依赖
 
 ```powershell
-cd F:\code\测试
+cd E:\code\openhub
 pnpm install
 ```
 
@@ -73,7 +83,7 @@ pnpm dev
 另开一个终端，启动前端：
 
 ```powershell
-cd F:\code\测试
+cd E:\code\openhub
 pnpm web:dev
 ```
 
@@ -81,7 +91,13 @@ pnpm web:dev
 
 ---
 
-## 5. Phase 1 全链路验证（按 DESIGN 第 17 章）
+## 5. 外部应用接入
+
+上层网站或软件只需要 OpenHub 地址和 OpenHub Key，不需要供应商 Key。可直接使用仓库内的 `@openhub/client`，或按 `docs/MULTIMODAL-INTEGRATION.md` 调用稳定 HTTP API。生产网站建议由自有后端保存 Key，浏览器直连只用于开发或受控环境。
+
+模型名称和目录只负责识别建议；没有供应商契约、适配器或有效配置时，OpenHub 会在执行前返回结构化错误，不把“识别到”伪装成“可调用”。
+
+## 6. Phase 1 全链路验证（按 DESIGN 第 17 章）
 
 ### 5.1 健康检查
 
@@ -158,7 +174,7 @@ curl http://localhost:3000/v1/models -H "Authorization: Bearer $HUB_KEY"
 
 ---
 
-## 6. Phase 2 目录同步验证
+## 7. Phase 2 目录同步验证
 
 ### 6.1 触发目录同步
 
@@ -192,7 +208,7 @@ curl -X POST http://localhost:3000/admin/catalog/rematch -u "admin:admin123"
 
 ---
 
-## 7. 常见问题
+## 8. 常见问题
 
 ### 7.1 安装/启动阶段
 
@@ -228,10 +244,10 @@ curl -X POST http://localhost:3000/admin/catalog/rematch -u "admin:admin123"
 
 ---
 
-## 8. Docker 一键启动（开发联调用）
+## 9. Docker 一键启动（开发联调用）
 
 ```powershell
-cd F:\code\测试
+cd E:\code\openhub
 copy .env.docker .env       # Windows
 docker compose up --build
 ```
@@ -244,10 +260,10 @@ docker compose up --build
 
 ---
 
-## 8. 目录结构
+## 10. 目录结构
 
 ```
-F:\code\测试\
+E:\code\openhub\
 ├── DESIGN.md                      # 设计文档（只读）
 ├── README.md                      # 本文件
 ├── package.json                   # monorepo 根
@@ -341,13 +357,8 @@ F:\code\测试\
 
 ---
 
-## 9. Phase 2 之后的下一步
+## 11. 当前下一步
 
-Phase 2 完成后，按 DESIGN 第 17 章 Phase 3 进入：
-- 图片 / 音频 / 视频适配器
-- 异步任务管理（轮询 worker + webhook）
-- 变体组 / 多站点降级
-- 参数映射执行引擎
-- 模型引导配置向导（LLM 推断）
+当前重点不是继续堆叠目录或供应商分支，而是为每个新增适配器补齐协议证据、Schema/参数契约、fixture、任务状态映射和合规测试。P0 视频异步任务只保证逐任务查询；batch/dynamic 查询必须有真实协议和专用实现后再启用。
 
 每个新功能都应先在 DESIGN 文档中确认数据模型，再写代码。

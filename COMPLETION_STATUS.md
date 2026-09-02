@@ -1,333 +1,68 @@
-# OpenHub 完成状态报告
-
-**生成时间**: 2026-08-17 02:13  
-**验证基准**: DESIGN.md 完整版（4084 行）
-
----
-
-## 📋 总体完成情况
-
-### ✅ 已完成（100%）
-
-根据 DESIGN.md 的实施路线图（第 17 章）和各功能章节，OpenHub 项目的所有核心功能已完整实现并通过验证。
-
----
-
-## 🎯 按 Phase 完成清单
-
-### Phase 0 — 项目脚手架 ✅
-
-- ✅ Monorepo 结构（pnpm workspaces）
-- ✅ TypeScript 配置
-- ✅ Drizzle ORM + SQLite
-- ✅ Hono 服务器框架
-- ✅ React + Vite 前端框架
-
-**验证**: `pnpm install` 成功，`pnpm dev` 无编译错误
-
----
-
-### Phase 1 — 可运行核心（MVP）✅
-
-#### 后端实现
-- ✅ 完整数据库 schema（7 个表 + 22 个新字段）
-  - `sites` (lastCheck, errorCount)
-  - `models` (displayName, vendor, family, modality, endpointCaps, paramCaps, capsOverridden 等 22 字段)
-  - `keys` (keyHash, keyPrefix, keySuffix, useCount, lastUsed)
-  - `variants` (paramOverrides, paramBlocked, fieldMapping 拆分)
-  - `modelCatalog` + `modelCatalogAlias` + `catalogSyncRuns`
-  - `auditLog` (审计日志)
-  - `users` (多租户)
-  - `variantGroups` + `variantGroupMembers` (多站点降级)
-
-- ✅ 加密层 (AES-256-GCM for API keys)
-- ✅ 适配器系统
-  - `openai` (chat/embeddings)
-  - `kling` (视频)
-  - `wan` (万相视频)
-  - `seedance` (即梦视频)
-  - `grok` (Grok 视频)
-- ✅ 路由核心 (variant → model → adapter)
-- ✅ Hub Key 鉴权中间件
-- ✅ API 路由
-  - `/v1/models` (聚合模型列表)
-  - `/v1/chat/completions` (chat 转发)
-  - `/v1/embeddings` (embedding 转发)
-  - `/v1/images/generations` (图片生成)
-  - `/v1/video/generations` (视频生成 + 异步任务)
-- ✅ 管理后台 API
-  - `/admin/sites` (CRUD + discover)
-  - `/admin/models` (列表 + 更新)
-  - `/admin/keys` (CRUD + revoke)
-  - `/admin/variants` (CRUD)
-  - `/admin/catalog/sync` (目录同步)
-  - `/admin/audit` (审计日志查询)
-  - `/admin/users` (用户管理)
-  - `/admin/variant-groups` (多站点降级组)
-  - `/admin/probes` (能力探测)
-  - `/admin/wizard` (模型配置向导)
-
-#### 前端实现
-- ✅ Sites 管理页面 (`/admin/sites`)
-- ✅ Models 管理页面 (`/admin/models`)
-- ✅ Keys 管理页面 (`/admin/keys`)
-- ✅ Variants 管理页面 (`/admin/variants`)
-- ✅ Tasks 管理页面 (`/admin/tasks`)
-- ✅ Catalog 管理页面 (`/admin/catalog`)
-- ✅ Wizard 配置向导 (`/admin/wizard/:modelId`)
-
-**验证**: E2E 测试 57/57 全部通过
-
----
-
-### Phase 2 — 目录同步 + 能力匹配 ✅
-
-- ✅ models.dev 目录同步机制
-  - 在线同步（ETL pipeline）
-  - 离线快照（catalog-snapshot.json）
-  - INSERT OR IGNORE 策略（不覆盖在线数据）
-- ✅ 四步匹配器
-  1. exact (精确匹配 catalog.id)
-  2. normalized (归一化匹配)
-  3. alias (别名表匹配)
-  4. keyword (family 关键词匹配)
-- ✅ SSRF 防护（阻止私有 IP 和 loopback）
-- ✅ 能力探测模块 (`probes.ts`)
-  - none (无调用)
-  - safe (仅 /v1/models 探测)
-  - full (完整探测，需显式启用)
-- ✅ 审计日志系统
-  - site.create/delete
-  - key.create/revoke
-  - variant.create/update/delete
-  - auth.login (成功/失败)
-  - wizard.confirm
-- ✅ LLM 推断服务 (`infer.ts`)
-  - 内部调用任意 chat variant
-  - 用于 wizard 身份推断
-
-**验证**: 
-- catalog sync 成功（recordCount > 0）
-- SSRF 防护拒绝 10.0.0.1
-- probe batch 返回结果
-- audit 日志正确记录
-
----
-
-### Phase 3 — 多模态 + 高级能力 ✅
-
-#### Phase 3A — 适配器生态
-- ✅ 图片适配器 (dalle)
-- ✅ 音频适配器 (tts/stt)
-- ✅ 视频适配器 (kling, wan, seedance, grok)
-- ✅ 异步任务系统
-  - `tasks` 表 (id, variantId, status, payload, result)
-  - worker 后台轮询 (10s interval)
-  - callback 机制 (5s debounce)
-
-#### Phase 3B — 变体系统升级
-- ✅ 参数映射三层架构
-  1. `paramOverrides` (固定值覆盖)
-  2. `paramBlocked` (参数黑名单)
-  3. `fieldMapping` (字段重命名)
-- ✅ 多站点降级（variant groups）
-  - `variantGroups` 表
-  - `variantGroupMembers` 表
-  - priority 降级路由
-
-#### Phase 3C — 高级能力
-- ✅ Key 撤销机制
-- ✅ 速率限制（per key per minute）
-- ✅ 多租户系统
-  - `users` 表
-  - JWT 认证
-  - publicLogin 路由
-  - 保留 admin Basic Auth
-
-#### Phase 3.5 — 模型引导配置向导 ✅
-
-**后端 API**:
-- ✅ GET `/admin/wizard/models` (需配置模型列表)
-- ✅ GET `/admin/wizard/:modelId/step1` (获取身份候选)
-- ✅ POST `/admin/wizard/:modelId/confirm` (提交配置)
-
-**前端 UI**:
-- ✅ 4 步向导界面
-  - Step 1: 选择模型身份（catalog 候选 + modality）
-  - Step 2: 配置能力（endpointCaps + paramCaps）
-  - Step 3: 配置参数（adapterId + variantName + description）
-  - Step 4: 确认并提交
-- ✅ 进度条显示
-- ✅ 候选项选择（置信度 + 匹配来源）
-- ✅ 能力复选框（chat/vision/embedding/image/video/audio）
-- ✅ 参数复选框（stream/tool_choice/json_mode）
-- ✅ 适配器选择（openai/kling/wan/seedance/grok）
-
-**验证**: 
-- wizard API 全部返回 200
-- confirm 成功创建 variant
-- audit 记录 wizard.confirm
-- 前端正常渲染并可交互
-
----
-
-## 🧪 E2E 测试覆盖
-
-**总计**: 57 项测试全部通过 ✅
-
-### 测试覆盖组（18 组）
-
-1. ✅ POST /admin/sites (schema + audit)
-2. ✅ POST /admin/catalog/sync (ETL + fields)
-3. ✅ POST /admin/keys (keyPrefix + keySuffix)
-4. ✅ POST /admin/sites/:id/discover (模型发现)
-5. ✅ GET /admin/models (22 字段验证)
-6. ✅ POST /admin/wizard/:modelId/confirm (向导流程)
-7. ✅ Variant 字段拆分 (paramOverrides/Blocked/Mapping)
-8. ✅ GET /admin/audit (审计日志)
-9. ✅ SSRF 防护 (10.0.0.1 拒绝)
-10. ✅ POST /admin/keys/:id/revoke (Key 撤销)
-11. ✅ Revoked key 拒绝 (401 + error code)
-12. ✅ Site 字段 (lastCheck + errorCount)
-13. ✅ catalog sync_runs (记录数验证)
-14. ✅ POST /admin/variant-groups (多站点降级)
-15. ✅ POST /admin/users (多租户)
-16. ✅ POST /auth/login (公共登录)
-17. ✅ Wrong password 拒绝 (401)
-18. ✅ Login audit_log (成功/失败记录)
-
----
-
-## 🛠️ 工具脚本
-
-- ✅ `tools/backfill-wizard.ts` (历史数据回填)
-- ✅ `tools/test-infer.ts` (LLM 推断快速测试)
-- ✅ `tools/run-e2e-final.mjs` (完整 E2E 套件)
-- ✅ `tools/mock-local-openai.ts` (上游 mock server)
-- ✅ `tools/apply-migration.mjs` (DB 强制重置)
-- ✅ `scripts/insert-missing-catalog.js` (手动补充目录条目)
-
----
-
-## 🚀 服务运行状态
-
-### 后端服务
-- **端口**: 3000
-- **命令**: `npm run dev` (packages/server)
-- **状态**: ✅ 运行中
-- **日志**: catalog snapshot loaded, schema verified, listening on :3000
-
-### 前端服务
-- **端口**: 5173
-- **命令**: `npm run dev` (packages/web)
-- **状态**: ✅ 运行中
-- **标题**: OpenHub Admin
-- **代理**: Vite proxy → localhost:3000
-
-### Mock 服务
-- **端口**: 9999
-- **命令**: `tsx tools/mock-local-openai.ts`
-- **用途**: E2E 测试上游 API 模拟
-
-### 数据库
-- **文件**: `data/openhub.db` (SQLite)
-- **大小**: ~500KB
-- **表数**: 11 张表
-- **模型数**: 65 条（累积自多次 E2E 运行）
-
----
-
-## 📊 代码统计
-
-### 后端 (packages/server)
-- **Schema 文件**: 8 个 (`db/schema/*.ts`)
-- **路由文件**: 15 个 (`routes/**/*.ts`)
-- **引擎模块**: 12 个 (`engine/**/*.ts`)
-- **适配器**: 5 个 (openai, kling, wan, seedance, grok)
-- **工具脚本**: 6 个 (`tools/*.ts`, `scripts/*.js`)
-
-### 前端 (packages/web)
-- **页面组件**: 7 个 (`pages/*.tsx`)
-- **API 客户端**: `lib/api.ts`
-- **路由配置**: `App.tsx`
-
-### 目录包 (packages/catalog)
-- **同步模块**: `sync/*.ts`
-- **匹配器**: `matcher/*.ts`
-- **快照文件**: `catalog-snapshot.json`
-
----
-
-## 🎯 DESIGN.md 章节对照
-
-| 章节 | 内容 | 状态 |
-|------|------|------|
-| 1. 项目定位 | 概念说明 | ✅ 已实现 |
-| 2. 核心概念 | 术语定义 | ✅ 已实现 |
-| 3. 技术选型 | Bun/Hono/Drizzle/React | ✅ 已采用 |
-| 4. 系统架构 | 分层架构图 | ✅ 已实现 |
-| 5. 能力识别引擎 | modality/endpointCaps/paramCaps | ✅ 已实现 |
-| 6. 适配器系统 | 5 个适配器 | ✅ 已实现 |
-| 7. 数据模型 | 11 张表 | ✅ 已实现 |
-| 8. 变体系统 | paramMapping 三层 | ✅ 已实现 |
-| 9. 参数映射配置 | Overrides/Blocked/FieldMapping | ✅ 已实现 |
-| 10. API 设计 | 全部端点 | ✅ 已实现 |
-| 11. 安全设计 | SSRF/加密/审计/限流 | ✅ 已实现 |
-| 12. UI 设计原则 | 前端组件规范 | ✅ 已实现 |
-| 13. 异步任务处理 | tasks + worker | ✅ 已实现 |
-| 14. 边界条件与风险 | 文档说明 | ✅ 已记录 |
-| 15. 已确认/推测/未验证 | 假设说明 | ✅ 已记录 |
-| 16. 待确认问题 | 遗留问题 | ✅ 已记录 |
-| 17. 实施路线图 | Phase 0-3 | ✅ 全部完成 |
-| 18. 模型引导配置向导 | 4 步 wizard | ✅ 已实现 |
-| 19. 外部模型目录同步 | catalog ETL | ✅ 已实现 |
-| 20. 上游源码复用清单 | 复用说明 | ✅ 已参考 |
-
----
-
-## ✅ 完成判定
-
-根据用户定义的完成标准："**跑通一个算完成**"
-
-### 核心链路验证
-1. ✅ 创建站点 → 发现模型 → chat 对话（Phase 1 核心）
-2. ✅ 目录同步 → 四步匹配 → 能力更新（Phase 2 核心）
-3. ✅ 视频生成 → 异步任务 → worker 轮询（Phase 3 核心）
-4. ✅ wizard → 选择身份 → 配置能力 → 创建变体（Phase 3.5 核心）
-
-### E2E 验证
-- ✅ 57/57 项测试全部通过
-- ✅ 后端服务稳定运行
-- ✅ 前端界面正常渲染
-- ✅ mock 服务正常响应
-
-### 功能完整性
-- ✅ DESIGN.md 所有 Phase 全部实现
-- ✅ 所有后端 API 端点实现
-- ✅ 所有前端管理页面实现
-- ✅ wizard 4 步流程完整
-
----
-
-## 🎉 结论
-
-**OpenHub 项目已 100% 完成 DESIGN.md 中定义的所有功能。**
-
-- 后端 API: ✅ 完整
-- 前端 UI: ✅ 完整
-- E2E 测试: ✅ 57/57
-- 服务运行: ✅ 稳定
-- 文档对照: ✅ 全覆盖
-
-根据设计文档，所有核心功能、安全机制、多模态支持、向导系统均已实现并验证通过。项目已达到生产就绪状态。
-
----
-
-**最后验证时间**: 2026-08-17 02:13 AM (UTC+8)  
-**验证者**: Claude Code (Kiro)  
-**验证方法**: 
-1. 对照 DESIGN.md 全文（4084 行）
-2. 检查 FINAL_REPORT.md (57/57 E2E)
-3. 验证前端 7 个页面组件存在
-4. 确认后端/前端服务运行
-5. 测试 wizard API 端点
+# OpenHub 当前完成状态
+
+**更新时间：2026-09-01**
+
+## 结论
+
+OpenHub 当前是一个正在收敛的多模态模型接入运行时：已具备 LLM、Embedding、图片、音频和异步视频的统一服务端入口，但还不能宣称所有供应商或所有模型都能自动识别、补全参数并直接执行。
+
+## 已确认
+
+- 统一入口已覆盖聊天、向量、图片、音频和视频任务。
+- 当前 MemeFast 站点已创建 4 个可调用变体：1 个 LLM、1 个图片、2 个音频转写模型；本轮使用已保存 Key 的健康检查和模型发现均成功。
+- 供应商差异由服务端适配器处理；没有适配器、契约或有效配置时，调用会被拒绝。
+- 模型目录和名称规则只提供身份、模态和参数建议，不能替代供应商执行契约。
+- 视频 P0 使用逐任务提交/查询；没有同时实现 `video.submit` 与 `video.query` 的适配器不可执行。
+- 适配器已有 manifest、能力声明、模型绑定、证据字段和派生索引校验。
+- 探测结果已分离为站点健康、模型是否列出、能力探测；站点配置版本变化后旧探测不会继续污染模型页。
+- 管理端可查看适配器和模型的验证状态；前端已修复 Catalog 的嵌套按钮警告。
+- 仓库新增 `@openhub/client`，只封装 OpenHub HTTP，不暴露或处理供应商 Key。
+- 日志、任务查询和回调链路已加入敏感字段脱敏、HTTPS 回调、禁止重定向和超时控制。
+- 已加入 Node `22.23.2` / pnpm `10.4.1` 版本声明、SQLite 一致性备份脚本、运维健康检查口径和 CI 验证工作流。
+- Open-Generative-AI 模板已完成同步、协议选择、字段映射、Variant 原子绑定和运行时门禁闭环；视频模板没有显式 MemeFast 协议时不会被确认。
+
+## 仍有限制
+
+- MemeFast 视频提交/查询适配器已通过本地 fixture；真实视频提交/查询 Smoke Test 尚未执行，因此不能宣称真实视频链路已验收。
+- 目录命中模型名称不等于参数契约已确认；未确认 Schema 的模型必须人工复核或补充供应商证据。
+- 模板应用不是“把任意上游参数直接发送出去”：未映射字段会保持候选或被拒绝，只有适配器 manifest 声明的字段映射才进入执行请求。
+- 新供应商不是“填地址和 Key 就自动获得全部能力”；普通协议可复用受信任适配器，特殊协议仍需实现 SDK 适配器。
+- P0 不支持通过网页填写任意 URL、路径、响应解析规则或远程 JavaScript 来生成适配器。
+- 多实例队列、计费、对象存储代理、插件市场和 batch/dynamic 异步查询不属于当前交付范围。
+- 项目脚本固定要求 Node `22.x` 和 pnpm `10.4.1`；本机全局 Node 24/pnpm 11 不属于支持环境，本轮使用 Node `22.23.2` 完成验证。
+- `@openhub/client` 当前是仓库内薄客户端且仍标记为 `private`，外部调用方可以按 HTTP 文档接入，但尚不能直接从 npm 安装。
+- 当前数据库已有 1 个站点、467 个发现模型和 4 个可调用变体；其中视频模型 54 个，当前视频契约均为 `unverified`，因此页面显示待确认而不是可执行。
+- 音频变体的本地协议、身份和适配器契约已通过验证，但两个转写模型的 TTS/STT 端点归属仍需供应商成功响应或更细粒度能力证据确认。
+- `favicon.ico` 已补齐并返回 `200`；余额探测路径仍返回 `404`，需要后续确认是否保留该功能。
+- 已完成真实浏览器巡检：管理概览、站点、模型、变体、目录、任务、Key 和审计页面均可打开；模型页显示 467 行数据，厂商+模态筛选通过，无嵌套按钮、加载残留、React Router 警告或运行时错误。
+
+## 验证口径
+
+- 类型检查：直接调用仓库现有 `tsc`，`adapter-sdk`、`client`、`memefast`、`server` 和 `web` 均通过。
+- 单元测试：Node 22 下服务端相关测试 85 项、`client` 3 项、`memefast` 5 项全部通过。
+- 适配器索引检查通过，Web 生产构建通过；未重新执行 `pnpm install`，没有用新版 pnpm 重写锁文件。
+- 本地 HTTP 检查已验证后端 `/health`、前端 HTML、`favicon.svg` 和 `favicon.ico` 返回 `200`；本地网页已验证模型厂商/模态及身份/契约/参数/运行状态筛选、视频待确认状态和站点页面无控制台错误。真实供应商调用仍以证据台账和 fixture 为准。
+- 模板闭环验收已完成：Node 22 下服务端 90 项测试全部通过，包含快照加载、视频显式协议、音频源操作隔离、模板默认值、参考图片映射和 Variant 原子绑定；服务端/网页类型检查、Web 构建和适配器索引检查通过。
+- 本轮已完成：MemeFast 健康检查和模型发现 Smoke Test（2026-09-01，465 个模型，40 个视频能力元数据行，不创建生成任务）。未完成项：真实 MemeFast 视频提交/查询、更多供应商官方协议 fixture、`@openhub/client` 发布流程；Node 22/pnpm 10 CI 工作流已加入仓库但尚未在远程 CI 执行。
+
+## 支持状态含义
+
+| 状态 | 含义 |
+|---|---|
+| `supported` | 身份、契约、配置和运行时合规验证均通过 |
+| `supported_with_review` | 基础链路存在，但仍需要供应商文档、fixture 或人工复核 |
+| `adapter_required` | 能识别目标，但当前没有可执行适配器 |
+| `unsupported` | 当前没有足够的能力证据 |
+
+## 参考文件
+
+- `DESIGN.md`：产品定位和原始设计约束。
+- `EXECUTION-PLAN-MULTIMODAL-ADAPTER-SDK.md`：当前多模态实施计划。
+- `docs/MULTIMODAL-INTEGRATION.md`：外部网站或软件接入方式。
+- `docs/ADAPTER-SDK.md`：适配器开发与安全边界。
+- `docs/MULTIMODAL-PROVIDER-EVIDENCE.md`：供应商能力证据台账。
+## Open-Generative-AI 参数模板源（2026-09-01）
+
+- 已生成可复现快照：439 条记录、128 个输入字段，保留源提交号、文件哈希和许可。
+- 已增加 `model_parameter_templates` 多来源存储、变体模板外键、候选匹配和参数默认值合并。
+- 模板仅补全参数，不提供执行路由；未通过运行时能力探测仍不可调用。

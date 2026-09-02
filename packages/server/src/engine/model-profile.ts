@@ -29,6 +29,10 @@ function jsonList(value: string[] | undefined): string | null {
   return value && value.length > 0 ? JSON.stringify(value) : null;
 }
 
+export function shouldRefreshDerivedModelProfile(capsOverridden: number): boolean {
+  return capsOverridden === 0;
+}
+
 export function buildDerivedModelProfile(inferred: InferredCapability): DerivedModelProfile {
   const endpointCaps = inferred.endpointCaps ?? [];
   const profile: DerivedModelProfile = {

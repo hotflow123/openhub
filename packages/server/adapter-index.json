@@ -1,0 +1,231 @@
+{
+  "formatVersion": 1,
+  "adapters": [
+    {
+      "id": "grok",
+      "version": "1.0.0",
+      "displayName": "Grok video",
+      "modalities": [
+        "video"
+      ],
+      "capabilities": [
+        "video.query",
+        "video.submit"
+      ],
+      "modelBindings": [
+        {
+          "match": "prefix",
+          "values": [
+            "grok-imagine-"
+          ],
+          "evidence": [
+            {
+              "kind": "runtime",
+              "ref": "legacy-adapter:grok",
+              "verifiedAt": "2026-08-30"
+            }
+          ]
+        }
+      ],
+      "artifactTypes": [
+        "video"
+      ],
+      "sourcePath": "src/engine/adapters/grok.ts",
+      "artifactSha256": "81e5a987396671de90236aa90425e934e26a801e55676508a32950bc6706b5f3",
+      "status": "ready"
+    },
+    {
+      "id": "kling",
+      "version": "1.0.0",
+      "displayName": "Kling video",
+      "modalities": [
+        "video"
+      ],
+      "capabilities": [
+        "video.query",
+        "video.submit"
+      ],
+      "modelBindings": [
+        {
+          "match": "prefix",
+          "values": [
+            "kling"
+          ],
+          "evidence": [
+            {
+              "kind": "runtime",
+              "ref": "legacy-adapter:kling",
+              "verifiedAt": "2026-08-30"
+            }
+          ]
+        }
+      ],
+      "artifactTypes": [
+        "video"
+      ],
+      "sourcePath": "src/engine/adapters/kling.ts",
+      "artifactSha256": "2869e81127ae1b38b1665e147b1bbb261927def2d2e78dad77515c1c72d10668",
+      "status": "ready"
+    },
+    {
+      "id": "memefast",
+      "version": "1.0.0",
+      "displayName": "MemeFast",
+      "modalities": [
+        "audio",
+        "embedding",
+        "image",
+        "llm",
+        "video"
+      ],
+      "capabilities": [
+        "audio.speech",
+        "audio.transcription",
+        "chat",
+        "chat.stream",
+        "embedding",
+        "image.generation",
+        "video.query",
+        "video.submit"
+      ],
+      "modelBindings": [
+        {
+          "match": "exact",
+          "values": [
+            "memefast"
+          ],
+          "evidence": [
+            {
+              "kind": "runtime",
+              "ref": "legacy-adapter:memefast",
+              "verifiedAt": "2026-08-30"
+            }
+          ]
+        }
+      ],
+      "artifactTypes": [
+        "audio",
+        "image",
+        "video"
+      ],
+      "sourcePath": "src/engine/adapters/memefast.ts",
+      "artifactSha256": "f540e5a38bb90cf10299ad891b3772b3c9e66a073d23bedf7e585c76ce1bd707",
+      "status": "ready"
+    },
+    {
+      "id": "openai",
+      "version": "1.0.0",
+      "displayName": "OpenAI-compatible",
+      "modalities": [
+        "audio",
+        "embedding",
+        "image",
+        "llm",
+        "video"
+      ],
+      "capabilities": [
+        "audio.speech",
+        "audio.transcription",
+        "chat",
+        "chat.stream",
+        "embedding",
+        "image.edit",
+        "image.generation",
+        "image.variation",
+        "video.query",
+        "video.submit"
+      ],
+      "modelBindings": [
+        {
+          "match": "exact",
+          "values": [
+            "openai-compatible"
+          ],
+          "evidence": [
+            {
+              "kind": "runtime",
+              "ref": "legacy-adapter:openai",
+              "verifiedAt": "2026-08-30"
+            }
+          ]
+        }
+      ],
+      "artifactTypes": [
+        "audio",
+        "image",
+        "video"
+      ],
+      "sourcePath": "src/engine/adapters/openai.ts",
+      "artifactSha256": "205275a8e241afe21d432368a66167e35eb2542734c924abb29536003d08b9cb",
+      "status": "ready"
+    },
+    {
+      "id": "seedance",
+      "version": "1.0.0",
+      "displayName": "Seedance video",
+      "modalities": [
+        "video"
+      ],
+      "capabilities": [
+        "video.query",
+        "video.submit"
+      ],
+      "modelBindings": [
+        {
+          "match": "prefix",
+          "values": [
+            "seedance",
+            "doubao-seedance"
+          ],
+          "evidence": [
+            {
+              "kind": "runtime",
+              "ref": "legacy-adapter:seedance",
+              "verifiedAt": "2026-08-30"
+            }
+          ]
+        }
+      ],
+      "artifactTypes": [
+        "video"
+      ],
+      "sourcePath": "src/engine/adapters/seedance.ts",
+      "artifactSha256": "f8afec851ae35910415e504dc34eee327154b9fe15879a5f66c5040eeb865e06",
+      "status": "ready"
+    },
+    {
+      "id": "wan",
+      "version": "1.0.0",
+      "displayName": "Wan video",
+      "modalities": [
+        "video"
+      ],
+      "capabilities": [
+        "video.query",
+        "video.submit"
+      ],
+      "modelBindings": [
+        {
+          "match": "prefix",
+          "values": [
+            "wan-",
+            "Wan-"
+          ],
+          "evidence": [
+            {
+              "kind": "runtime",
+              "ref": "legacy-adapter:wan",
+              "verifiedAt": "2026-08-30"
+            }
+          ]
+        }
+      ],
+      "artifactTypes": [
+        "video"
+      ],
+      "sourcePath": "src/engine/adapters/wan.ts",
+      "artifactSha256": "2a938a1bc7a08cb3e2def34e20eef08a4ee471946b5eb71f7385a98236703aff",
+      "status": "ready"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { authMiddleware, checkVariantAccess } from "../../middleware/auth";
-import { forwardChat, forwardChatStream, RouterError } from "../router";
+import { forwardChat, forwardChatStream, normalizeRouterError } from "../router";
 import type { ChatRequest } from "../../engine/adapter";
 
 const chat = new Hono();
@@ -26,7 +26,7 @@ chat.post("/v1/chat/completions", async (c) => {
     );
   }
 
-  const access = checkVariantAccess(c, variantId);
+  const access = await checkVariantAccess(c, variantId);
   if (!access.ok) {
     return c.json(access.body, access.status as 401 | 403);
   }
@@ -52,18 +52,10 @@ chat.post("/v1/chat/completions", async (c) => {
 });
 
 function handleRouterError(err: unknown): Response {
-  if (err instanceof RouterError) {
-    return new Response(
-      JSON.stringify({
-        error: { message: err.message, type: "router_error", code: err.code },
-      }),
-      { status: err.status, headers: { "Content-Type": "application/json" } },
-    );
-  }
-  const message = err instanceof Error ? err.message : String(err);
+  const routerError = normalizeRouterError(err);
   return new Response(
-    JSON.stringify({ error: { message, type: "upstream_error" } }),
-    { status: 502, headers: { "Content-Type": "application/json" } },
+    JSON.stringify({ error: { message: routerError.message, type: "router_error", code: routerError.code, details: routerError.details } }),
+    { status: routerError.status, headers: { "Content-Type": "application/json" } },
   );
 }
 

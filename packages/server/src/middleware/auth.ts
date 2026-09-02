@@ -1,7 +1,7 @@
 import type { Context, Next } from "hono";
-import { eq, sql } from "drizzle-orm";
+import { eq, or, sql } from "drizzle-orm";
 import { db } from "../db/index";
-import { keys } from "../db/schema/index";
+import { keys, variants } from "../db/schema/index";
 import { hashToken } from "../lib/token";
 import { checkRateLimit } from "./rate-limit";
 
@@ -112,18 +112,26 @@ export async function authMiddleware(c: Context, next: Next) {
 /**
  * 校验该 key 是否有权访问某个 variant
  */
-export function checkVariantAccess(
+export async function checkVariantAccess(
   c: Context,
-  variantId: string,
-): { ok: true } | { ok: false; status: number; body: unknown } {
+  variantRef: string,
+): Promise<{ ok: true } | { ok: false; status: number; body: unknown }> {
   const hubKey = c.get("hubKey");
-  if (hubKey.allowedVariantIds && !hubKey.allowedVariantIds.includes(variantId)) {
+  if (!hubKey.allowedVariantIds) return { ok: true };
+
+  const [variant] = await db
+    .select({ id: variants.id })
+    .from(variants)
+    .where(or(eq(variants.name, variantRef), eq(variants.id, variantRef)))
+    .limit(1);
+
+  if (!variant || !hubKey.allowedVariantIds.includes(variant.id)) {
     return {
       ok: false,
       status: 403,
       body: {
         error: {
-          message: `Key is not authorized to use variant ${variantId}`,
+          message: `Key is not authorized to use variant ${variantRef}`,
           type: "permission_error",
           code: "variant_not_allowed",
         },

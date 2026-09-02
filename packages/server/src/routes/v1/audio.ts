@@ -3,7 +3,7 @@ import { authMiddleware, checkVariantAccess } from "../../middleware/auth";
 import {
   forwardAudioSpeech,
   forwardAudioTranscription,
-  RouterError,
+  normalizeRouterError,
 } from "../router";
 import type {
   AudioSpeechRequest,
@@ -13,19 +13,16 @@ import type {
 const audio = new Hono();
 audio.use("/v1/audio/*", authMiddleware);
 
-function errorResponse(status: number, message: string, code?: string) {
+function errorResponse(status: number, message: string, code?: string, details?: Record<string, unknown>) {
   return new Response(
-    JSON.stringify({ error: { message, type: "router_error", code } }),
+    JSON.stringify({ error: { message, type: "router_error", code, ...(details && Object.keys(details).length > 0 ? { details } : {}) } }),
     { status, headers: { "Content-Type": "application/json" } },
   );
 }
 
 function handleRouterError(err: unknown): Response {
-  if (err instanceof RouterError) {
-    return errorResponse(err.status, err.message, err.code);
-  }
-  const message = err instanceof Error ? err.message : String(err);
-  return errorResponse(502, message, "upstream_error");
+  const routerError = normalizeRouterError(err);
+  return errorResponse(routerError.status, routerError.message, routerError.code, routerError.details);
 }
 
 const FORMAT_CONTENT_TYPE: Record<string, string> = {
@@ -53,7 +50,7 @@ audio.post("/v1/audio/speech", async (c) => {
   if (!body.input) return errorResponse(400, "Missing input", "missing_input");
   if (!body.voice) return errorResponse(400, "Missing voice", "missing_voice");
 
-  const access = checkVariantAccess(c, body.model);
+  const access = await checkVariantAccess(c, body.model);
   if (!access.ok) return errorResponse(access.status, (access.body as any).error.message, "variant_not_allowed");
 
   try {
@@ -84,7 +81,7 @@ audio.post("/v1/audio/transcriptions", async (c) => {
   const fileField = form["file"];
   if (!fileField) return errorResponse(400, "Missing file", "missing_file");
 
-  const access = checkVariantAccess(c, model);
+  const access = await checkVariantAccess(c, model);
   if (!access.ok) return errorResponse(access.status, (access.body as any).error.message, "variant_not_allowed");
 
   const req: AudioTranscriptionRequest = {

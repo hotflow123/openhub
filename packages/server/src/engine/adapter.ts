@@ -1,3 +1,30 @@
+import type {
+  AdapterCapability as SdkAdapterCapability,
+  AdapterContext as SdkAdapterContext,
+  AdapterHandler as SdkAdapterHandler,
+  AdapterManifest,
+  AudioAdapter as SdkAudioAdapter,
+  AudioSpeechRequest as SdkAudioSpeechRequest,
+  AudioTranscriptionRequest as SdkAudioTranscriptionRequest,
+  AudioTranscriptionResponse as SdkAudioTranscriptionResponse,
+  ChatRequest as SdkChatRequest,
+  ChatResponse as SdkChatResponse,
+  EmbeddingAdapter as SdkEmbeddingAdapter,
+  EmbeddingRequest as SdkEmbeddingRequest,
+  EmbeddingResponse as SdkEmbeddingResponse,
+  ImageAdapter as SdkImageAdapter,
+  ImageEditRequest as SdkImageEditRequest,
+  ImageGenerationRequest as SdkImageGenerationRequest,
+  ImageResponse as SdkImageResponse,
+  ImageVariationRequest as SdkImageVariationRequest,
+  LlmAdapter as SdkLlmAdapter,
+  ProviderAdapter,
+  VideoAdapter as SdkVideoAdapter,
+  VideoQueryResult as SdkVideoQueryResult,
+  VideoSubmitRequest as SdkVideoSubmitRequest,
+  VideoSubmitResult as SdkVideoSubmitResult,
+} from "@openhub/adapter-sdk";
+
 /**
  * 适配器接口
  *
@@ -199,6 +226,7 @@ export interface VideoQueryResult {
 export interface ForwardContext {
   targetUrl: string;
   apiKey: string;
+  model?: string;
   /** 适配器特定覆盖配置 */
   config?: Record<string, unknown>;
 }
@@ -260,6 +288,148 @@ export interface Adapter {
   transformVideoResult?(raw: unknown): VideoResult;
 }
 
+function toLegacyContext(context: SdkAdapterContext): ForwardContext {
+  const legacyContext: ForwardContext = {
+    targetUrl: context.targetUrl,
+    apiKey: context.apiKey,
+  };
+  if (context.config !== undefined) legacyContext.config = context.config;
+  return legacyContext;
+}
+
+function hasCapability(adapter: Adapter, capability: SdkAdapterCapability): boolean {
+  return adapter.capabilities.includes(capability);
+}
+
+function wrapLlmAdapter(adapter: Adapter): SdkLlmAdapter {
+  return {
+    complete: async (input: SdkChatRequest, context: SdkAdapterContext): Promise<SdkChatResponse> =>
+      await adapter.forwardChat(
+        input as unknown as ChatRequest,
+        toLegacyContext(context),
+      ) as unknown as SdkChatResponse,
+    stream: async (input: SdkChatRequest, context: SdkAdapterContext): Promise<Response> =>
+      await adapter.forwardChatStream(
+        input as unknown as ChatRequest,
+        toLegacyContext(context),
+      ),
+  };
+}
+
+function wrapEmbeddingAdapter(adapter: Adapter): SdkEmbeddingAdapter {
+  return {
+    create: async (input: SdkEmbeddingRequest, context: SdkAdapterContext): Promise<SdkEmbeddingResponse> =>
+      await adapter.forwardEmbedding!(
+        input as unknown as EmbeddingRequest,
+        toLegacyContext(context),
+      ) as unknown as SdkEmbeddingResponse,
+  };
+}
+
+function wrapImageAdapter(adapter: Adapter): SdkImageAdapter {
+  return {
+    generate: adapter.forwardImageGeneration
+      ? async (input: SdkImageGenerationRequest, context: SdkAdapterContext): Promise<SdkImageResponse> =>
+        await adapter.forwardImageGeneration!(
+          input as unknown as ImageGenerationRequest,
+          toLegacyContext(context),
+        ) as unknown as SdkImageResponse
+      : undefined,
+    edit: adapter.forwardImageEdit
+      ? async (input: SdkImageEditRequest, context: SdkAdapterContext): Promise<SdkImageResponse> =>
+        await adapter.forwardImageEdit!(
+          input as unknown as ImageEditRequest,
+          toLegacyContext(context),
+        ) as unknown as SdkImageResponse
+      : undefined,
+    variation: adapter.forwardImageVariation
+      ? async (input: SdkImageVariationRequest, context: SdkAdapterContext): Promise<SdkImageResponse> =>
+        await adapter.forwardImageVariation!(
+          input as unknown as ImageVariationRequest,
+          toLegacyContext(context),
+        ) as unknown as SdkImageResponse
+      : undefined,
+  };
+}
+
+function wrapAudioAdapter(adapter: Adapter): SdkAudioAdapter {
+  return {
+    speech: adapter.forwardAudioSpeech
+      ? async (input: SdkAudioSpeechRequest, context: SdkAdapterContext): Promise<ArrayBuffer> =>
+        await adapter.forwardAudioSpeech!(
+          input as unknown as AudioSpeechRequest,
+          toLegacyContext(context),
+        )
+      : undefined,
+    transcribe: adapter.forwardAudioTranscription
+      ? async (input: SdkAudioTranscriptionRequest, context: SdkAdapterContext): Promise<SdkAudioTranscriptionResponse> =>
+        await adapter.forwardAudioTranscription!(
+          input as unknown as AudioTranscriptionRequest,
+          toLegacyContext(context),
+        ) as unknown as SdkAudioTranscriptionResponse
+      : undefined,
+  };
+}
+
+function wrapVideoAdapter(adapter: Adapter): SdkVideoAdapter {
+  return {
+    submit: async (input: SdkVideoSubmitRequest, context: SdkAdapterContext): Promise<SdkVideoSubmitResult> =>
+      await adapter.submitVideoTask!(
+        input as unknown as VideoSubmitRequest,
+        toLegacyContext(context),
+      ) as unknown as SdkVideoSubmitResult,
+    query: async (siteTaskId: string, context: SdkAdapterContext): Promise<SdkVideoQueryResult> =>
+      await adapter.queryVideoTask!(siteTaskId, toLegacyContext(context)) as unknown as SdkVideoQueryResult,
+  };
+}
+
+/**
+ * 将旧版适配器包装为来源中立 SDK 适配器。
+ * manifest 必须由调用方提供，避免桥接层凭适配器 ID 猜测模型身份或供应商能力。
+ */
+export function wrapLegacyAdapter(adapter: Adapter, manifest: AdapterManifest): ProviderAdapter {
+  const handlers: SdkAdapterHandler[] = [];
+  if (hasCapability(adapter, "chat") || hasCapability(adapter, "chat.stream")) {
+    handlers.push({ modality: "llm", handler: wrapLlmAdapter(adapter) });
+  }
+  if (hasCapability(adapter, "embedding") && adapter.forwardEmbedding) {
+    handlers.push({ modality: "embedding", handler: wrapEmbeddingAdapter(adapter) });
+  }
+  if (
+    hasCapability(adapter, "image.generation") ||
+    hasCapability(adapter, "image.edit") ||
+    hasCapability(adapter, "image.variation")
+  ) {
+    handlers.push({ modality: "image", handler: wrapImageAdapter(adapter) });
+  }
+  if (hasCapability(adapter, "audio.speech") || hasCapability(adapter, "audio.transcription")) {
+    handlers.push({ modality: "audio", handler: wrapAudioAdapter(adapter) });
+  }
+  if (hasCapability(adapter, "video.submit") || hasCapability(adapter, "video.query")) {
+    handlers.push({ modality: "video", handler: wrapVideoAdapter(adapter) });
+  }
+  return {
+    manifest,
+    handlers,
+    healthCheck: async (context: SdkAdapterContext) => await adapter.healthCheck(toLegacyContext(context)),
+    discoverModels: adapter.discoverModels
+      ? async (context: SdkAdapterContext) => (await adapter.discoverModels!(toLegacyContext(context))).map((model) => ({
+        id: model.id,
+        name: model.name,
+        ownedBy: model.owned_by,
+        metadata: {
+          object: model.object,
+          created: model.created,
+          ...model.metadata,
+        },
+      }))
+      : undefined,
+    validateConfig: adapter.validateConfig
+      ? (config, modality) => adapter.validateConfig!(config, modality)
+      : undefined,
+  };
+}
+
 const registry = new Map<string, Adapter>();
 
 export function registerAdapter(adapter: Adapter): void {
@@ -275,6 +445,16 @@ export function normalizeAdapterId(id: string | null | undefined): string | null
   if (!id) return null;
   if (id === "openai-compatible") return "openai";
   return id;
+}
+
+export function providerV1Url(targetUrl: string, path: string): string {
+  const base = targetUrl.replace(/\/+$/, "");
+  const suffix = `/${path.replace(/^\/+/, "")}`;
+  if (base.endsWith("/v1") && suffix === "/v1") return base;
+  if (base.endsWith("/v1") && suffix.startsWith("/v1/")) {
+    return `${base}${suffix.slice(3)}`;
+  }
+  return `${base}${suffix}`;
 }
 
 /**

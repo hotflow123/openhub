@@ -10,6 +10,7 @@
     "./upstream/*": "./src/upstream/*.ts",
     "./sync": "./src/sync/index.ts",
     "./matcher": "./src/matcher/index.ts"
+    ,"./parameter-template": "./src/parameter-template.ts"
   },
   "dependencies": {
     "zod": "^3.23.0",

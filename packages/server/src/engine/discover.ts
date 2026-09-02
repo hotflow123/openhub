@@ -11,10 +11,55 @@ import type {
   ParameterSnapshot,
 } from "./infer";
 import { getAdapter, type DiscoveredRemoteModel } from "./adapter";
-import { buildDerivedModelProfile } from "./model-profile";
+import { buildDerivedModelProfile, shouldRefreshDerivedModelProfile } from "./model-profile";
+import { buildAdapterIndex } from "./adapter-index";
+import {
+  getProviderAdapterRegistration,
+  matchAdapterModelBinding,
+} from "./adapter-manifest";
+import {
+  buildCapabilityContract,
+  deriveModelIdentity,
+} from "../lib/model-contract";
 
 interface DiscoveredModel extends DiscoveredRemoteModel {
   id: string;
+}
+
+function parseCapabilityList(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const value = JSON.parse(raw);
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function effectiveInference(
+  runtime: InferredCapability,
+  name: InferredCapability,
+  existing?: Pick<DiscoveredModel & {
+    modality: ModelModality;
+    modalitySource: ClassificationSource;
+    modalityConfidence: "high" | "medium" | "low";
+    modalityReason: string | null;
+    endpointCaps: string;
+    paramCaps: string;
+  }, "modality" | "modalitySource" | "modalityConfidence" | "modalityReason" | "endpointCaps" | "paramCaps">,
+): InferredCapability {
+  if (runtime.modality !== "unknown") return runtime;
+  if (name.modality !== "unknown") return name;
+  if (!existing || existing.modality === "unknown") return runtime;
+  return {
+    modality: existing.modality,
+    confidence: 0.75,
+    endpointCaps: parseCapabilityList(existing.endpointCaps),
+    paramCaps: parseCapabilityList(existing.paramCaps),
+    classificationSource: existing.modalitySource,
+    classificationConfidence: existing.modalityConfidence,
+    classificationReason: existing.modalityReason ?? "persisted_model_profile",
+  };
 }
 
 /**
@@ -44,6 +89,16 @@ export async function discoverModels(
 ): Promise<{ discovered: number; updated: number; offline: number; skipped: number }> {
   const adapter = getAdapter(adapterId);
   if (!adapter) throw new Error(`Adapter not found: ${adapterId}`);
+  const registration = getProviderAdapterRegistration(adapterId);
+  const adapterIndex = registration ? await buildAdapterIndex([registration]) : null;
+  const adapterHash = adapterIndex?.adapters[0]?.artifactSha256 ?? null;
+  const adapterValidationStatus = registration?.status ?? "invalid";
+  const adapterValidationReason = registration?.issues.length
+    ? registration.issues.map((issue) => `${issue.path}: ${issue.message}`).join("; ")
+    : null;
+  const manifestMatch = registration
+    ? (rawName: string) => matchAdapterModelBinding(registration.manifest, rawName)
+    : () => null;
 
   let discoveredModels: DiscoveredModel[];
   if (adapter.discoverModels) {
@@ -74,11 +129,48 @@ export async function discoverModels(
       m.metadata && typeof m.metadata === "object" &&
       ("parameters" in m.metadata || "input_schema" in m.metadata || "inputSchema" in m.metadata),
     );
+    let runtimeInferred: InferredCapability = {
+      modality: "unknown",
+      confidence: 0.1,
+      endpointCaps: [],
+      paramCaps: [],
+      classificationSource: "unknown",
+      classificationConfidence: "low",
+      classificationReason: "inference_failed",
+    };
+    try {
+      runtimeInferred = await inferModelCapability(m.id, { runtimeMetadata: m.metadata });
+    } catch (err) {
+      console.warn(`[discover] Failed to infer runtime profile for ${m.id}:`, err);
+    }
+    let nameInferred = runtimeInferred;
+    try {
+      nameInferred = await inferModelCapability(m.id);
+    } catch (err) {
+      console.warn(`[discover] Failed to infer name profile for ${m.id}:`, err);
+    }
+    const runtimeIdentity = deriveModelIdentity({
+      runtimeInference: runtimeInferred,
+      nameInference: nameInferred,
+      runtimeMetadata: m.metadata,
+      manifestMatch: manifestMatch(m.id),
+    });
     const [existing] = await db
       .select()
       .from(models)
       .where(eq(models.id, modelId))
       .limit(1);
+    const contractInference = effectiveInference(runtimeInferred, nameInferred, existing);
+    const runtimeContract = contractInference.modality === "unknown"
+      ? null
+      : buildCapabilityContract({
+        modality: contractInference.modality,
+        identity: runtimeIdentity,
+        inferred: contractInference,
+        runtimeMetadata: m.metadata,
+        adapterCapabilities: adapter.capabilities,
+        adapterValidationStatus,
+      });
 
     if (existing) {
       if (existing.adapterSource === "site") {
@@ -89,13 +181,27 @@ export async function discoverModels(
           statusReason: null,
           syncedAt: new Date(),
           updatedAt: new Date(),
+          modelIdentityStatus: runtimeIdentity.status,
+          modelIdentitySource: runtimeIdentity.source,
+          modelIdentityReason: runtimeIdentity.reason,
+          capabilityContractSnapshot: runtimeContract ? JSON.stringify(runtimeContract) : null,
+          capabilityContractSource: runtimeContract?.source ?? null,
+          capabilityContractStatus: runtimeContract?.status ?? "unverified",
+          capabilityContractReason: runtimeContract?.reason ?? "no_capability_contract",
+          capabilityContractSyncedAt: runtimeContract ? new Date() : null,
+          adapterVersion: registration?.manifest.version ?? null,
+          adapterHash,
+          adapterValidationStatus,
+          adapterValidationReason,
+          requiresAsync: contractInference.modality === "video"
+            && adapter.capabilities.includes("video.submit")
+            && adapter.capabilities.includes("video.query")
+            ? 1
+            : 0,
         };
-        if (existing.capsOverridden === 0) {
-          const inferred = await inferModelCapability(m.id, {
-            runtimeMetadata: m.metadata,
-          });
-          Object.assign(update, buildDerivedModelProfile(inferred));
-          if (inferred.modality === "video" && !existing.videoContractStatus) {
+        if (shouldRefreshDerivedModelProfile(existing.capsOverridden)) {
+          Object.assign(update, buildDerivedModelProfile(contractInference));
+          if (contractInference.modality === "video" && !existing.videoContractStatus) {
             Object.assign(update, {
               videoContractSource: "runtime",
               videoContractStatus: runtimeHasVideoSchema ? "candidate" : "unverified",
@@ -105,6 +211,11 @@ export async function discoverModels(
             });
           }
         }
+        update.requiresAsync = contractInference.modality === "video"
+          && adapter.capabilities.includes("video.submit")
+          && adapter.capabilities.includes("video.query")
+          ? 1
+          : 0;
         await db
           .update(models)
           .set(update)
@@ -122,8 +233,12 @@ export async function discoverModels(
     let schemaMatchStatus: "unmatched" | "candidate" | "confirmed" | "partial" = "unmatched";
     let schemaMatchConfidence: "high" | "medium" | "low" | null = null;
     let schemaMatchReason: string | null = "no_exact_alias";
+    let discoveredInferred: InferredCapability | null = null;
     try {
-      const schemaMatch = await matchSchema(m.id);
+      const schemaMatch = await matchSchema(m.id, {
+        modality: runtimeInferred.modality !== "unknown" ? runtimeInferred.modality : nameInferred.modality,
+        adapterCapabilities: adapter.capabilities,
+      });
       if (schemaMatch) {
         schemaEndpointId = schemaMatch.endpointId;
         schemaMatchSource = schemaMatch.aliasType;
@@ -184,6 +299,7 @@ export async function discoverModels(
         schemaEndpointId: schemaMatchStatus === "confirmed" ? schemaEndpointId : null,
         runtimeMetadata: m.metadata,
       });
+      discoveredInferred = inferred;
       inferredVendor = inferred.inferredVendor && inferred.inferredVendor !== "Unknown"
         ? inferred.inferredVendor
         : null;
@@ -194,6 +310,7 @@ export async function discoverModels(
       modalityConfidence = inferred.classificationConfidence ?? "low";
       modalityReason = inferred.classificationReason ?? null;
       if (modality === "video") {
+        requiresAsync = adapter.capabilities.includes("video.submit") && adapter.capabilities.includes("video.query") ? 1 : requiresAsync;
         videoContractSource = "runtime";
         videoContractStatus = runtimeHasVideoSchema ? "candidate" : "unverified";
         videoContractReason = runtimeHasVideoSchema
@@ -335,6 +452,24 @@ export async function discoverModels(
       console.warn(`[discover] Failed to infer ${m.id}; keeping modality unknown:`, err);
     }
 
+    const evidenceInferred = discoveredInferred ?? runtimeInferred;
+    const identity = deriveModelIdentity({
+      runtimeInference: evidenceInferred,
+      nameInference: nameInferred,
+      runtimeMetadata: m.metadata,
+      manifestMatch: manifestMatch(m.id),
+    });
+    const capabilityContract = evidenceInferred.modality === "unknown"
+      ? null
+      : buildCapabilityContract({
+        modality: evidenceInferred.modality,
+        identity,
+        inferred: evidenceInferred,
+        runtimeMetadata: m.metadata,
+        adapterCapabilities: adapter.capabilities,
+        adapterValidationStatus,
+      });
+
     await db.insert(models).values({
       id: modelId,
       siteId,
@@ -368,6 +503,18 @@ export async function discoverModels(
       videoContractStatus,
       videoContractReason,
       videoContractSyncedAt: null,
+      capabilityContractSnapshot: capabilityContract ? JSON.stringify(capabilityContract) : null,
+      capabilityContractSource: capabilityContract?.source ?? null,
+      capabilityContractStatus: capabilityContract?.status ?? "unverified",
+      capabilityContractReason: capabilityContract?.reason ?? "no_capability_contract",
+      capabilityContractSyncedAt: capabilityContract ? new Date() : null,
+      modelIdentityStatus: identity.status,
+      modelIdentitySource: identity.source,
+      modelIdentityReason: identity.reason,
+      adapterVersion: registration?.manifest.version ?? null,
+      adapterHash,
+      adapterValidationStatus,
+      adapterValidationReason,
       videoDurationEnum,
       videoAspectRatios,
       videoResolutions,
