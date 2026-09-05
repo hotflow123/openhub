@@ -36,7 +36,7 @@ async function main() {
           .where(eq(modelSchemaAlias.endpointId, model.schemaEndpointId))
           .limit(1);
         if (alias) {
-          console.log(`  Schema Alias: ${alias.originalName}`);
+          console.log(`  Schema Alias: ${alias.alias}`);
         }
       }
       

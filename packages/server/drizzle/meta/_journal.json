@@ -36,6 +36,27 @@
       "when": 1787126891979,
       "tag": "0004_schema-match-evidence",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788537600000,
+      "tag": "0005_add_key_rate_limit",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788537660000,
+      "tag": "0006_memefast_protocol_catalog",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788610200000,
+      "tag": "0007_model_source_metadata",
+      "breakpoints": true
     }
   ]
 }

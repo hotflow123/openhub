@@ -1,10 +1,14 @@
 import { eq } from "drizzle-orm";
 import { db } from "../db/index";
-import { models } from "../db/schema/index";
+import { models, sites, variants } from "../db/schema/index";
+import { nanoid } from "nanoid";
 import { inferModelCapability } from "./infer";
 import { matchSchema } from "./catalog/schema-matcher";
 import { extractInputSchemaCapabilities } from "../lib/fal-input-schema";
 import type { InferredCapability, ParameterSnapshot } from "./infer";
+import { resolveAdapterForModel } from "./adapter";
+import { resolveModelProtocol, assessProtocolReadiness } from "./protocol-catalog";
+import { assessPublication } from "./publication-policy";
 
 interface DiscoveredModel {
   id: string;
@@ -12,6 +16,82 @@ interface DiscoveredModel {
   created?: number;
   name?: string;
   owned_by?: string;
+  model_type?: string;
+  description?: string;
+  tags?: string;
+  supported_endpoint_types?: string[];
+  [key: string]: unknown;
+}
+
+function metadataScore(model: DiscoveredModel): number {
+  return Number(Boolean(model.model_type)) +
+    Number(Boolean(model.description)) +
+    Number(Boolean(model.tags)) +
+    Number(Array.isArray(model.supported_endpoint_types) && model.supported_endpoint_types.length > 0);
+}
+
+function modelAliasBases(id: string): string[] {
+  const bases: string[] = [];
+  let current = id;
+  for (let index = 0; index < 4; index += 1) {
+    current = current
+      .replace(/-\d{4}-\d{2}-\d{2}$/, "")
+      .replace(/-(?:low|medium|high|xhigh|max|ultra|latest|preview)$/, "");
+    if (current === id || bases.includes(current)) break;
+    bases.push(current);
+  }
+  return bases;
+}
+
+export function resolveEffectiveRuntimeModel(
+  model: DiscoveredModel,
+  allModels: DiscoveredModel[],
+): DiscoveredModel {
+  if (metadataScore(model) > 0) return model;
+  const byId = new Map(allModels.map((candidate) => [candidate.id, candidate]));
+  for (const base of modelAliasBases(model.id)) {
+    const candidate = byId.get(base);
+    if (candidate && metadataScore(candidate) > 0) {
+      return {
+        ...model,
+        model_type: model.model_type ?? candidate.model_type,
+        description: model.description ?? candidate.description,
+        tags: model.tags ?? candidate.tags,
+        supported_endpoint_types: model.supported_endpoint_types?.length
+          ? model.supported_endpoint_types
+          : candidate.supported_endpoint_types,
+        _openhubMetadataInheritedFrom: candidate.id,
+      };
+    }
+  }
+  return model;
+}
+
+export function inferRuntimeModality(model: Pick<
+  DiscoveredModel,
+  "model_type" | "tags" | "supported_endpoint_types" | "id" | "description"
+>): "llm" | "image" | "audio" | "video" | "embedding" | null {
+  const type = model.model_type ?? "";
+  const tags = model.tags ?? "";
+  const endpoints = Array.isArray(model.supported_endpoint_types)
+    ? model.supported_endpoint_types.join(" ")
+    : "";
+  const metadata = `${type} ${tags} ${endpoints}`.toLowerCase();
+
+  if (/(检索|embedding|rerank|重排序|向量)/i.test(metadata)) return "embedding";
+  if (/(音频|audio|speech|tts|语音|音乐|sound effect)/i.test(metadata)) return "audio";
+  if (/(视频|video|text to video|image to video|video generation)/i.test(metadata)) return "video";
+  if (/(图像|图片|image generation|image edit|绘图)/i.test(metadata)) return "image";
+  if (/(对话|chat|completion|openai|anthropic|gemini|claude|deepseek)/i.test(metadata)) return "llm";
+
+  const fallback = `${model.id} ${model.description ?? ""}`.toLowerCase();
+  if (/(embedding|rerank|重排序|向量)/i.test(fallback)) return "embedding";
+  if (/(audio|speech|tts|voice|语音|音乐|suno)/i.test(fallback)) return "audio";
+  if (/(image|图片|图像|绘图)/i.test(fallback)) return "image";
+  if (/(video|视频|seedance|veo|kling|sora|pixverse|vidu|runway|luma|hailuo)/i.test(fallback)) return "video";
+  if (/(^|[-_/])mj(?:$|[-_/])|midjourney|flux|seedream/i.test(fallback)) return "image";
+  if (/(chat|completion|messages|对话|llm|gemini|claude|deepseek|openai|gpt|qwen|wen|llama|glm|kimi|ernie|sparkdesk|mimo|qwq|qvq|o1|o3|o4|davinci|babbage|doubao)/i.test(fallback)) return "llm";
+  return null;
 }
 
 /**
@@ -19,6 +99,74 @@ interface DiscoveredModel {
  */
 export function deriveModelId(siteId: string, remoteId: string): string {
   return `${siteId}__${remoteId}`;
+}
+
+async function ensureAutoVariant(modelId: string, rawName: string): Promise<void> {
+  const [model] = await db
+    .select()
+    .from(models)
+    .where(eq(models.id, modelId))
+    .limit(1);
+  if (!model) return;
+  const [site] = await db
+    .select()
+    .from(sites)
+    .where(eq(sites.id, model.siteId))
+    .limit(1);
+  const resolved = site ? resolveAdapterForModel(model.adapterId, site.adapterId) : null;
+  const protocol = model.modality === "video"
+    ? await resolveModelProtocol(model.id)
+    : null;
+  const decision = assessPublication({
+    siteActive: site?.status === "active",
+    modelStatus: model.status,
+    modality: model.modality,
+    adapterCapabilities: resolved?.adapter.capabilities ?? [],
+    protocolReady: Boolean(
+      protocol &&
+      protocol.catalog.enabled &&
+      protocol.catalog.status === "active" &&
+      assessProtocolReadiness(protocol.document).ready,
+    ),
+  });
+  const [existing] = await db
+    .select({ id: variants.id })
+    .from(variants)
+    .where(eq(variants.modelId, modelId))
+    .limit(1);
+  if (existing) {
+    if (existing.id.startsWith("auto_")) {
+      await db
+        .update(variants)
+        .set({ isPublic: decision.public ? 1 : 0, updatedAt: new Date() })
+        .where(eq(variants.id, existing.id));
+    }
+    return;
+  }
+  const [nameTaken] = await db
+    .select({ id: variants.id })
+    .from(variants)
+    .where(eq(variants.name, rawName))
+    .limit(1);
+  if (nameTaken) return;
+  await db.insert(variants).values({
+    id: `auto_${nanoid(10)}`,
+    name: rawName,
+    modelId,
+    description: "Automatically discovered from the upstream model list",
+    isPublic: decision.public ? 1 : 0,
+  });
+}
+
+export async function refreshAutoVariantsForSite(siteId: string): Promise<void> {
+  const rows = await db
+    .select({ id: models.id, rawName: models.rawName })
+    .from(models)
+    .where(eq(models.siteId, siteId));
+  for (let offset = 0; offset < rows.length; offset += 16) {
+    const batch = rows.slice(offset, offset + 16);
+    await Promise.all(batch.map((row) => ensureAutoVariant(row.id, row.rawName)));
+  }
 }
 
 /**
@@ -37,6 +185,8 @@ export async function discoverModels(
   siteId: string,
   baseUrl: string,
   apiKey: string,
+  adapterId = "openai",
+  options: { enrich?: boolean } = {},
 ): Promise<{ discovered: number; skipped: number }> {
   const url = `${baseUrl.replace(/\/$/, "")}/v1/models`;
   const response = await fetch(url, {
@@ -46,21 +196,79 @@ export async function discoverModels(
   if (!response.ok) {
     throw new Error(`Discover models failed: HTTP ${response.status}`);
   }
-  const data = (await response.json()) as { data: DiscoveredModel[] };
+  const data = (await response.json()) as { data?: unknown };
+  if (!data || !Array.isArray(data.data)) {
+    throw new Error("Discover models failed: invalid /v1/models response");
+  }
+  const discoveredModels = data.data.filter(
+    (model): model is DiscoveredModel =>
+      Boolean(model) &&
+      typeof model === "object" &&
+      typeof (model as DiscoveredModel).id === "string" &&
+      Boolean((model as DiscoveredModel).id.trim()),
+  );
 
   let discovered = 0;
-  let skipped = 0;
+  let skipped = data.data.length - discoveredModels.length;
+  const effectiveModels = discoveredModels.map((model) =>
+    resolveEffectiveRuntimeModel(model, discoveredModels),
+  );
+  const existingRows = await db
+    .select()
+    .from(models)
+    .where(eq(models.siteId, siteId));
+  const existingById = new Map(existingRows.map((model) => [model.id, model]));
 
-  for (const m of data.data) {
+  for (let index = 0; index < discoveredModels.length; index += 1) {
+    const m = discoveredModels[index];
+    const effectiveModel = effectiveModels[index];
     const modelId = deriveModelId(siteId, m.id);
-    const [existing] = await db
-      .select()
-      .from(models)
-      .where(eq(models.id, modelId))
-      .limit(1);
+    const existing = existingById.get(modelId);
 
     if (existing) {
+      if (options.enrich === false) {
+        skipped++;
+        continue;
+      }
+      const runtimeModality = inferRuntimeModality(effectiveModel);
+      if (
+        existing.adapterId !== adapterId ||
+        existing.sourceMetadata !== JSON.stringify(effectiveModel) ||
+        runtimeModality && !existing.capsOverridden
+      ) {
+        await db
+          .update(models)
+          .set({
+            adapterId,
+            ...(runtimeModality ? { modality: runtimeModality } : {}),
+            sourceMetadata: JSON.stringify(effectiveModel),
+            updatedAt: new Date(),
+          })
+          .where(eq(models.id, modelId));
+      }
       skipped++;
+      continue;
+    }
+
+    if (options.enrich === false) {
+      await db.insert(models).values({
+        id: modelId,
+        siteId,
+        rawName: m.id,
+        displayName: m.name ?? m.id,
+        adapterId,
+        modality: inferRuntimeModality(effectiveModel) ?? "unknown",
+        sourceMetadata: JSON.stringify(effectiveModel),
+        endpointCaps: "[]",
+        paramCaps: "[]",
+        capsOverridden: 0,
+        schemaMatchStatus: "unmatched",
+        schemaMatchReason: "enrichment_pending",
+        supportsStream: 1,
+        status: "active",
+        syncedAt: new Date(),
+      });
+      discovered++;
       continue;
     }
 
@@ -87,7 +295,8 @@ export async function discoverModels(
     }
 
     // 2. 自动推理模型能力（如果 schema 没有提供足够信息）
-    let modality: "llm" | "image" | "audio" | "video" | "embedding" = "llm";
+    let modality: "llm" | "image" | "audio" | "video" | "embedding" | "unknown" =
+      inferRuntimeModality(effectiveModel) ?? "unknown";
     let endpointCaps = "[]";
     let contextWindow: number | null = null;
     let maxOutputTokens: number | null = null;
@@ -114,6 +323,9 @@ export async function discoverModels(
     let supportsFunctionCalling = 0;
     let supportsVision = 0;
     let supportsReasoning = 0;
+    let inferredVendor: string | undefined;
+    let inferredFamily: string | undefined;
+    let inferredVersion: string | undefined;
 
     try {
       // A candidate only suggests an endpoint to an administrator. It must not
@@ -121,7 +333,11 @@ export async function discoverModels(
       const inferred = await inferModelCapability(m.id, {
         schemaEndpointId: schemaMatchStatus === "confirmed" ? schemaEndpointId : null,
       });
+      inferredVendor = inferred.inferredVendor;
+      inferredFamily = inferred.inferredFamily;
+      inferredVersion = inferred.inferredVersion;
       modality = inferred.modality;
+      modality = inferRuntimeModality(effectiveModel) ?? modality;
 
       // === 持久化 fal.ai 完整元数据（之前完全丢失）===
       if (inferred.falEndpointId) {
@@ -199,7 +415,7 @@ export async function discoverModels(
       }
 
       // === 根据 modality 持久化 endpointCaps ===
-      if (inferred.modality === "video") {
+      if (modality === "video") {
         endpointCaps = JSON.stringify(["video_generation"]);
         if (inferred.video) {
           // 补充从 video{} 来的额外信息（仅当 video{} 存在时）
@@ -216,7 +432,7 @@ export async function discoverModels(
         if (inferred.video?.requiresAsync) {
           requiresAsync = 1;
         }
-      } else if (inferred.modality === "image") {
+      } else if (modality === "image") {
         const caps = ["image_generation"];
         if (inferred.image?.supportsInpainting) caps.push("image_editing");
         endpointCaps = JSON.stringify(caps);
@@ -233,7 +449,7 @@ export async function discoverModels(
         if (inferred.image?.optionalParams) {
           videoOptionalParams = JSON.stringify(inferred.image.optionalParams);
         }
-      } else if (inferred.modality === "llm") {
+      } else if (modality === "llm") {
         const caps = ["chat"];
         if (inferred.llm?.supportsVision) {
           caps.push("vision");
@@ -249,7 +465,7 @@ export async function discoverModels(
 
       console.log(`[discover] Inferred ${m.id}: ${modality} (confidence: ${inferred.confidence}, params: ${inferred.parameters?.length ?? 0})`);
     } catch (err) {
-      console.warn(`[discover] Failed to infer ${m.id}, defaulting to llm:`, err);
+      console.warn(`[discover] Failed to infer ${m.id}; leaving inferred capabilities unknown:`, err);
     }
 
     await db.insert(models).values({
@@ -257,10 +473,12 @@ export async function discoverModels(
       siteId,
       rawName: m.id,
       displayName: m.name ?? m.id,
-      vendor: undefined,
-      family: undefined,
-      modelVersion: undefined,
+      vendor: inferredVendor,
+      family: inferredFamily,
+      modelVersion: inferredVersion,
+      adapterId,
       modality,
+      sourceMetadata: JSON.stringify(effectiveModel),
       endpointCaps,
       paramCaps: "[]",
       capsOverridden: 0,
@@ -301,6 +519,25 @@ export async function discoverModels(
       syncedAt: new Date(),
     });
     discovered++;
+  }
+
+  const currentNames = new Set(discoveredModels.map((model) => model.id));
+  const siteModels = await db
+    .select({ id: models.id, rawName: models.rawName, status: models.status })
+    .from(models)
+    .where(eq(models.siteId, siteId));
+  let stale = 0;
+  for (const model of siteModels) {
+    if (currentNames.has(model.rawName) || model.status === "offline") continue;
+    await db
+      .update(models)
+      .set({
+        status: "offline",
+        statusReason: "not_returned_by_latest_models_list",
+        updatedAt: new Date(),
+      })
+      .where(eq(models.id, model.id));
+    stale++;
   }
 
   return { discovered, skipped };

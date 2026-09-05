@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "../db/index";
 import { sites, models, variants } from "../db/schema/index";
 import {
@@ -19,11 +19,14 @@ import type {
   AudioTranscriptionResponse,
   EmbeddingRequest,
   EmbeddingResponse,
-  VideoSubmitRequest,
-  VideoQueryResult,
 } from "../engine/adapter";
 import { CHAT_KNOWN_FIELDS, mapStoredVariantParams } from "../engine/param-mapper";
 import { readModelInputContract } from "../lib/model-contract";
+import {
+  assessProtocolReadiness,
+  resolveModelProtocol,
+} from "../engine/protocol-catalog";
+import { assessPublication } from "../engine/publication-policy";
 
 export class RouterError extends Error {
   constructor(
@@ -41,6 +44,7 @@ export interface ResolvedRoute {
   site: typeof sites.$inferSelect;
   adapter: Adapter;
   apiKey: string;
+  protocol?: Awaited<ReturnType<typeof resolveModelProtocol>>;
 }
 
 function parseAdapterConfig(raw: string | null): Record<string, unknown> | undefined {
@@ -96,8 +100,46 @@ async function resolveRouteFromVariant(variant: typeof variants.$inferSelect): P
     throw new RouterError(configError, 500, "adapter_config_invalid");
   }
 
+  const protocol = await resolveModelProtocol(modelRow.id);
+  const publication = assessPublication({
+    siteActive: site.status === "active",
+    modelStatus: modelRow.status,
+    modality: modelRow.modality,
+    adapterCapabilities: resolved.adapter.capabilities,
+    protocolReady: Boolean(
+      protocol &&
+      protocol.catalog.enabled &&
+      protocol.catalog.status === "active" &&
+      assessProtocolReadiness(protocol.document).ready,
+    ),
+  });
+  if (variant.isPublic && !publication.public) {
+    throw new RouterError(
+      `Model ${modelRow.rawName} is not publicly executable: ${publication.reason}`,
+      503,
+      "model_not_ready",
+    );
+  }
+  if (modelRow.modality === "video") {
+    if (!protocol) {
+      throw new RouterError(
+        `No executable video protocol binding for model ${modelRow.rawName}`,
+        503,
+        "protocol_binding_missing",
+      );
+    }
+    const readiness = assessProtocolReadiness(protocol.document);
+    if (!readiness.ready) {
+      throw new RouterError(
+        `Video protocol for model ${modelRow.rawName} is incomplete: ${readiness.missing.join(", ")}`,
+        503,
+        "protocol_binding_incomplete",
+      );
+    }
+  }
+
   const apiKey = await decrypt(site.apiKeyEnc, site.apiKeyIv, getMasterKey());
-  return { variant, model: modelRow, site, adapter: resolved.adapter, apiKey };
+  return { variant, model: modelRow, site, adapter: resolved.adapter, apiKey, protocol };
 }
 
 /**
@@ -107,7 +149,7 @@ export async function resolveRoute(variantId: string): Promise<ResolvedRoute> {
   const [variant] = await db
     .select()
     .from(variants)
-    .where(eq(variants.name, variantId))
+    .where(and(eq(variants.name, variantId), eq(variants.isPublic, 1)))
     .limit(1);
   if (!variant) {
     throw new RouterError(`Variant not found: ${variantId}`, 404, "variant_not_found");
@@ -132,11 +174,28 @@ export function buildForwardContext(
   variant: typeof variants.$inferSelect,
   site: typeof sites.$inferSelect,
   apiKey: string,
+  protocol?: ResolvedRoute["protocol"],
 ) {
   return {
     targetUrl: site.baseUrl,
     apiKey,
     config: parseAdapterConfig(variant.adapterConfig),
+    protocol: protocol?.document
+      ? {
+          protocolId: protocol.document.protocolId,
+          version: protocol.document.version,
+          modality: protocol.document.modality ?? "unknown",
+          modelNames: protocol.document.modelNames,
+          operations: protocol.document.operations.filter(
+            (operation): operation is Record<string, unknown> =>
+              Boolean(operation) && typeof operation === "object" && !Array.isArray(operation),
+          ),
+          requestContract: protocol.document.requestContract,
+          responseContract: protocol.document.responseContract,
+          parameterMapping: protocol.document.parameterMapping,
+          statusMapping: protocol.document.statusMapping,
+        }
+      : undefined,
   };
 }
 
@@ -172,7 +231,7 @@ export async function forwardChat(
   req: ChatRequest,
 ): Promise<ChatResponse> {
   const route = await resolveRoute(variantId);
-  const ctx = buildForwardContext(route.variant, route.site, route.apiKey);
+  const ctx = buildForwardContext(route.variant, route.site, route.apiKey, route.protocol);
   req = applyVariantParams(route, req as unknown as Record<string, unknown>, "chat") as ChatRequest;
   // 把"v1/chat 请求里的 model (= variant name)"替换成上游站点的真实模型 id
   req.model = route.model.rawName;
@@ -189,7 +248,7 @@ export async function forwardChatStream(
   req: ChatRequest,
 ): Promise<Response> {
   const route = await resolveRoute(variantId);
-  const ctx = buildForwardContext(route.variant, route.site, route.apiKey);
+  const ctx = buildForwardContext(route.variant, route.site, route.apiKey, route.protocol);
   req = applyVariantParams(route, req as unknown as Record<string, unknown>, "chat") as ChatRequest;
   req.model = route.model.rawName;
   try {
@@ -208,7 +267,7 @@ export async function forwardImageGeneration(
   if (!route.adapter.forwardImageGeneration) {
     throw new RouterError("Adapter does not support image.generation", 400, "capability_unsupported");
   }
-  const ctx = buildForwardContext(route.variant, route.site, route.apiKey);
+  const ctx = buildForwardContext(route.variant, route.site, route.apiKey, route.protocol);
   req = applyVariantParams(route, req as unknown as Record<string, unknown>, "image") as unknown as ImageGenerationRequest;
   req.model = route.model.rawName;
   try {
@@ -227,7 +286,7 @@ export async function forwardImageEdit(
   if (!route.adapter.forwardImageEdit) {
     throw new RouterError("Adapter does not support image.edit", 400, "capability_unsupported");
   }
-  const ctx = buildForwardContext(route.variant, route.site, route.apiKey);
+  const ctx = buildForwardContext(route.variant, route.site, route.apiKey, route.protocol);
   req = applyVariantParams(route, req as unknown as Record<string, unknown>, "image") as unknown as ImageEditRequest;
   req.model = route.model.rawName;
   try {
@@ -250,7 +309,7 @@ export async function forwardImageVariation(
       "capability_unsupported",
     );
   }
-  const ctx = buildForwardContext(route.variant, route.site, route.apiKey);
+  const ctx = buildForwardContext(route.variant, route.site, route.apiKey, route.protocol);
   req = applyVariantParams(route, req as unknown as Record<string, unknown>, "image") as unknown as ImageVariationRequest;
   req.model = route.model.rawName;
   try {
@@ -273,7 +332,7 @@ export async function forwardAudioSpeech(
       "capability_unsupported",
     );
   }
-  const ctx = buildForwardContext(route.variant, route.site, route.apiKey);
+  const ctx = buildForwardContext(route.variant, route.site, route.apiKey, route.protocol);
   req = applyVariantParams(route, req as unknown as Record<string, unknown>, "audio") as unknown as AudioSpeechRequest;
   req.model = route.model.rawName;
   try {
@@ -296,7 +355,7 @@ export async function forwardAudioTranscription(
       "capability_unsupported",
     );
   }
-  const ctx = buildForwardContext(route.variant, route.site, route.apiKey);
+  const ctx = buildForwardContext(route.variant, route.site, route.apiKey, route.protocol);
   req = applyVariantParams(route, req as unknown as Record<string, unknown>, "audio") as unknown as AudioTranscriptionRequest;
   req.model = route.model.rawName;
   try {
@@ -315,53 +374,11 @@ export async function forwardEmbedding(
   if (!route.adapter.forwardEmbedding) {
     throw new RouterError("Adapter does not support embeddings", 400, "capability_unsupported");
   }
-  const ctx = buildForwardContext(route.variant, route.site, route.apiKey);
+  const ctx = buildForwardContext(route.variant, route.site, route.apiKey, route.protocol);
   req = applyVariantParams(route, req as unknown as Record<string, unknown>, "embedding") as unknown as EmbeddingRequest;
   req.model = route.model.rawName;
   try {
     return await route.adapter.forwardEmbedding(req, ctx);
-  } catch (err) {
-    await markSiteError(route.site.id, err);
-    throw err;
-  }
-}
-
-export async function submitVideoTask(
-  variantId: string,
-  req: VideoSubmitRequest,
-) {
-  const route = await resolveRoute(variantId);
-  if (!route.adapter.submitVideoTask) {
-    throw new RouterError(
-      "Adapter does not support video.submit",
-      400,
-      "capability_unsupported",
-    );
-  }
-  const ctx = buildForwardContext(route.variant, route.site, route.apiKey);
-  try {
-    return await route.adapter.submitVideoTask(req, ctx);
-  } catch (err) {
-    await markSiteError(route.site.id, err);
-    throw err;
-  }
-}
-
-export async function queryVideoTask(
-  variantId: string,
-  siteTaskId: string,
-): Promise<VideoQueryResult> {
-  const route = await resolveRoute(variantId);
-  if (!route.adapter.queryVideoTask) {
-    throw new RouterError(
-      "Adapter does not support video.query",
-      400,
-      "capability_unsupported",
-    );
-  }
-  const ctx = buildForwardContext(route.variant, route.site, route.apiKey);
-  try {
-    return await route.adapter.queryVideoTask(siteTaskId, ctx);
   } catch (err) {
     await markSiteError(route.site.id, err);
     throw err;

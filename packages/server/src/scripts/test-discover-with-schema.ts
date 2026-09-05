@@ -53,7 +53,7 @@ async function main() {
   }
 
   const masterKey = getMasterKey();
-  const apiKey = decrypt(site.apiKeyEnc, site.apiKeyIv, masterKey);
+  const apiKey = await decrypt(site.apiKeyEnc, site.apiKeyIv, masterKey);
   console.log(`✓ API Key 解密成功: ${apiKey.substring(0, 10)}...\n`);
 
   // 3. 清空该站点的现有模型
@@ -67,12 +67,12 @@ async function main() {
   console.log("⏳ 开始模型发现...");
   try {
     const discovered = await discoverModels(site.id, site.baseUrl, apiKey);
-    console.log(`✅ 发现 ${discovered.length} 个模型\n`);
+    console.log(`✅ 发现 ${discovered.discovered} 个模型，跳过 ${discovered.skipped} 个\n`);
 
     // 5. 查询发现的模型详情
     const foundModels = await db
       .select({
-        name: models.name,
+        rawName: models.rawName,
         modality: models.modality,
         endpointCaps: models.endpointCaps,
         contextWindow: models.contextWindow,
@@ -95,7 +95,7 @@ async function main() {
     if (videoModels.length > 0) {
       console.log("📹 视频模型:");
       videoModels.forEach(m => {
-        console.log(`  ${m.name}`);
+      console.log(`  ${m.rawName}`);
         console.log(`    modality: ${m.modality}`);
         console.log(`    capabilities: ${m.endpointCaps}`);
         console.log(`    maxDurationSec: ${m.maxDurationSec || "N/A"}`);
@@ -109,7 +109,7 @@ async function main() {
     if (imageModels.length > 0) {
       console.log("🖼️ 图像模型:");
       imageModels.slice(0, 3).forEach(m => {
-        console.log(`  ${m.name}`);
+      console.log(`  ${m.rawName}`);
         console.log(`    modality: ${m.modality}`);
         console.log(`    capabilities: ${m.endpointCaps}`);
         console.log(`    supportedSizes: ${m.supportedSizes || "N/A"}`);
@@ -120,7 +120,7 @@ async function main() {
 
     if (llmModels.length > 0) {
       console.log(`💬 LLM 模型: ${llmModels.length} 个`);
-      console.log(`  (示例: ${llmModels.slice(0, 3).map(m => m.name).join(", ")})\n`);
+      console.log(`  (示例: ${llmModels.slice(0, 3).map(m => m.rawName).join(", ")})\n`);
     }
 
     // 6. 统计 Schema 匹配情况
@@ -134,14 +134,14 @@ async function main() {
     if (withSchema.length > 0) {
       console.log(`\n已匹配模型示例:`);
       withSchema.slice(0, 5).forEach(m => {
-        console.log(`  - ${m.name} → ${m.schemaEndpointId}`);
+        console.log(`  - ${m.rawName} → ${m.schemaEndpointId}`);
       });
     }
 
     if (withoutSchema.length > 0) {
       console.log(`\n未匹配模型示例:`);
       withoutSchema.slice(0, 5).forEach(m => {
-        console.log(`  - ${m.name} (${m.modality})`);
+        console.log(`  - ${m.rawName} (${m.modality})`);
       });
     }
 

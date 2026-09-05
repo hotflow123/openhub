@@ -26,6 +26,9 @@ export const keys = sqliteTable(
     lastUsed: integer("last_used", { mode: "timestamp" }),
     useCount: integer("use_count").notNull().default(0),
 
+    // P0-2: per-key rate limit (requests/minute); null = default 60
+    rateLimit: integer("rate_limit"),
+
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
       .default(sql`(unixepoch())`),

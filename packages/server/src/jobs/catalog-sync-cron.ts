@@ -3,7 +3,6 @@ import { syncDb } from "../engine/catalog/db-adapter.js";
 import { refreshCatalogMappings } from "../engine/catalog/refresh-mappings.js";
 
 const DEFAULT_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const INITIAL_DELAY_MS = 5_000;
 
 let timer: NodeJS.Timeout | null = null;
 let initialTimer: NodeJS.Timeout | null = null;
@@ -35,13 +34,8 @@ async function runCatalogSync(): Promise<void> {
 }
 
 export function startCatalogSyncCron(): void {
-  initialTimer = setTimeout(() => {
-    initialTimer = null;
-    void runCatalogSync();
-  }, INITIAL_DELAY_MS);
-
   if (process.env.NODE_ENV !== "production") {
-    console.log("[cron] catalog sync scheduled once for non-production");
+    console.log("[cron] catalog sync disabled for non-production; run it explicitly when needed");
     return;
   }
 

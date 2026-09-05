@@ -180,9 +180,11 @@ export async function matchSchemasForSite(
 
   let matched = 0;
 
-  for (const model of siteModels) {
+  for (let offset = 0; offset < siteModels.length; offset += 16) {
+    const batch = siteModels.slice(offset, offset + 16);
+    const results = await Promise.all(batch.map(async (model) => {
     // 只对非 LLM 模型匹配 Schema（LLM 用 model_catalog）
-    if (model.modality === "llm" || model.modality === "embedding") continue;
+    if (model.modality === "llm" || model.modality === "embedding") return false;
 
     // Only an auditable wizard selection is an approved mapping. Historical
     // manual writes are candidates because their correctness is unknown.
@@ -200,8 +202,7 @@ export async function matchSchemasForSite(
           updatedAt: new Date(),
         })
         .where(eq(models.id, model.id));
-      matched++;
-      continue;
+      return true;
     }
 
     if (model.schemaMatchSource === "manual" && model.schemaEndpointId) {
@@ -215,8 +216,7 @@ export async function matchSchemasForSite(
           updatedAt: new Date(),
         })
         .where(eq(models.id, model.id));
-      matched++;
-      continue;
+      return true;
     }
 
     const result = await matchSchema(model.rawName);
@@ -235,7 +235,6 @@ export async function matchSchemasForSite(
           updatedAt: new Date(),
         })
         .where(eq(models.id, model.id));
-      matched++;
     } else if (model.schemaMatchStatus === "candidate" && model.schemaEndpointId) {
       // A candidate is deliberately retained for an administrator to review.
       // It has no Fal snapshot or limits until manual confirmation.
@@ -248,6 +247,7 @@ export async function matchSchemasForSite(
           updatedAt: new Date(),
         })
         .where(eq(models.id, model.id));
+      return false;
     } else {
       await db
         .update(models)
@@ -261,7 +261,11 @@ export async function matchSchemasForSite(
           updatedAt: new Date(),
         })
         .where(eq(models.id, model.id));
+      return false;
     }
+    return Boolean(result);
+    }));
+    matched += results.filter(Boolean).length;
   }
 
   return { matched, total: siteModels.length };

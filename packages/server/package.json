@@ -16,23 +16,25 @@
     "catalog:init": "tsx --env-file=.env scripts/init.ts",
     "init": "tsx --env-file=.env scripts/init.ts",
     "sync:fal": "tsx src/scripts/sync-fal-encyclopedia.ts",
-    "test": "tsx --test test-model-contract.ts test-param-mapper.ts",
+    "sync:oga": "tsx src/scripts/sync-open-generative-ai.ts",
+    "test": "tsx --test test-model-contract.ts test-param-mapper.ts test-open-generative-ai.ts test-memefast-protocol.ts test-memefast-adapter.ts test-publication-policy.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "hono": "^4.5.0",
     "@hono/node-server": "^1.13.0",
-    "drizzle-orm": "^0.36.0",
+    "@libsql/client": "^0.17.4",
+    "@openhub/catalog": "workspace:*",
     "better-sqlite3": "^11.2.0",
-    "zod": "^3.23.0",
+    "drizzle-orm": "^0.36.0",
+    "hono": "^4.5.0",
     "nanoid": "^5.0.7",
-    "@openhub/catalog": "workspace:*"
+    "zod": "^3.23.0"
   },
   "devDependencies": {
-    "drizzle-kit": "^0.28.0",
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^22.0.0",
-    "typescript": "^5.5.0",
-    "tsx": "^4.19.0"
+    "drizzle-kit": "^0.28.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
   }
 }

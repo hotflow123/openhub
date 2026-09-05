@@ -607,8 +607,8 @@ wizard.post("/wizard/:modelId/confirm", async (c) => {
       : {}),
   };
 
-  db.transaction((tx) => {
-    tx.update(models).set({
+  await db.transaction(async (tx) => {
+    await tx.update(models).set({
       adapterId,
       modality: step2.modality,
       endpointCaps: JSON.stringify(step2.endpointCaps),
@@ -629,7 +629,7 @@ wizard.post("/wizard/:modelId/confirm", async (c) => {
       updatedAt: now,
     }).where(eq(models.id, modelId)).run();
 
-    tx.insert(variants).values({
+    await tx.insert(variants).values({
       id: variantId,
       name: step3.variantName,
       modelId,

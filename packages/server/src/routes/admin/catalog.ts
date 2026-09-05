@@ -1,4 +1,4 @@
-import { count, desc, eq, inArray, isNotNull, isNull, like, or, sql } from "drizzle-orm";
+import { asc, count, desc, eq, inArray, isNotNull, isNull, like, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { generateAliases, performSync } from "@openhub/catalog/sync";
 import { db } from "../../db/index";
@@ -213,6 +213,7 @@ catalog.get("/catalog/schema", async (c) => {
           like(modelSchemaCatalog.endpointId, pattern),
           like(modelSchemaCatalog.falModelId, pattern),
         ))
+        .orderBy(desc(modelSchemaCatalog.fetchedAt), asc(modelSchemaCatalog.title))
         .limit(limit)
         .offset(offset);
     } else if (modality) {
@@ -220,12 +221,14 @@ catalog.get("/catalog/schema", async (c) => {
         .select()
         .from(modelSchemaCatalog)
         .where(eq(modelSchemaCatalog.modality, modality as any))
+        .orderBy(desc(modelSchemaCatalog.fetchedAt), asc(modelSchemaCatalog.title))
         .limit(limit)
         .offset(offset);
     } else {
       rows = await db
         .select()
         .from(modelSchemaCatalog)
+        .orderBy(desc(modelSchemaCatalog.fetchedAt), asc(modelSchemaCatalog.title))
         .limit(limit)
         .offset(offset);
     }
@@ -470,3 +473,4 @@ catalog.post("/catalog/infer-site", async (c) => {
     return c.json({ error: String(err) }, 500);
   }
 });
+

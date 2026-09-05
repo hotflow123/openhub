@@ -6,9 +6,11 @@ import { db } from "../../db/index";
 import { sites } from "../../db/schema/index";
 import { encrypt, getMasterKey } from "../../lib/crypto";
 import { validateUrl } from "../../lib/ssrf";
-import { discoverModels } from "../../engine/discover";
+import { discoverModels, refreshAutoVariantsForSite } from "../../engine/discover";
 import { matchModelsForSite } from "../../engine/catalog/match-after-discover";
 import { matchSchemasForSite } from "../../engine/catalog/schema-matcher";
+import { bindModelsToLatestProtocols } from "../../engine/protocol-catalog";
+import { getAdapter } from "../../engine/adapter";
 import { writeAudit } from "../../lib/audit";
 import { withAdminAuth } from "./_with-auth";
 
@@ -62,6 +64,9 @@ sitesRoute.post("/sites", async (c) => {
     return c.json({ error: parsed.error.flatten() }, 400);
   }
   const { name, baseUrl, apiKey, adapterId } = parsed.data;
+  if (!getAdapter(adapterId)) {
+    return c.json({ error: { message: `Unknown adapter: ${adapterId}`, code: "adapter_not_found" } }, 400);
+  }
 
   // P0-3: SSRF 校验
   try {
@@ -91,13 +96,32 @@ sitesRoute.post("/sites", async (c) => {
     payload: JSON.stringify({ name, baseUrl, adapterId }),
   });
 
-  (async () => {
+  try {
+    await discoverModels(id, baseUrl, apiKey, adapterId, { enrich: false });
+  } catch (err) {
+    const message = errorMessage(err);
+    console.error(`[sites] auto-discover failed for ${id}:`, err);
+    await db
+      .update(sites)
+      .set({ lastError: message, status: "error", updatedAt: new Date() })
+      .where(eq(sites.id, id));
+    return c.json({ error: { message } }, 502);
+  }
+
+  void (async () => {
     try {
-      await discoverModels(id, baseUrl, apiKey);
+      await discoverModels(id, baseUrl, apiKey, adapterId);
       await matchModelsForSite(id);
       await matchSchemasForSite(id);
-    } catch (err) {
-      console.error(`[sites] auto-discover failed for ${id}:`, err);
+      await bindModelsToLatestProtocols(id);
+      await refreshAutoVariantsForSite(id);
+    } catch (error) {
+      const message = errorMessage(error);
+      console.error(`[sites] post-create enrichment failed for ${id}:`, message);
+      await db
+        .update(sites)
+        .set({ lastError: message, updatedAt: new Date() })
+        .where(eq(sites.id, id));
     }
   })();
 
@@ -153,9 +177,10 @@ sitesRoute.post("/sites/:id/discover", async (c) => {
   const { decrypt } = await import("../../lib/crypto");
   const apiKey = await decrypt(site.apiKeyEnc, site.apiKeyIv, getMasterKey());
   try {
-    const result = await discoverModels(id, site.baseUrl, apiKey);
-    const match = await matchModelsForSite(id);
-    const schemaMatch = await matchSchemasForSite(id);
+    if (!getAdapter(site.adapterId)) {
+      return c.json({ error: { message: `Unknown adapter: ${site.adapterId}`, code: "adapter_not_found" } }, 500);
+    }
+    const result = await discoverModels(id, site.baseUrl, apiKey, site.adapterId, { enrich: false });
     await db
       .update(sites)
       .set({
@@ -166,14 +191,35 @@ sitesRoute.post("/sites/:id/discover", async (c) => {
         updatedAt: new Date(),
       })
       .where(eq(sites.id, id));
-    return c.json({ data: { ...result, ...match, schemaMatched: schemaMatch.matched, schemaTotal: schemaMatch.total } });
+    void (async () => {
+      try {
+        await discoverModels(id, site.baseUrl, apiKey, site.adapterId);
+        await matchModelsForSite(id);
+        await matchSchemasForSite(id);
+        await bindModelsToLatestProtocols(id);
+        await refreshAutoVariantsForSite(id);
+      } catch (error) {
+        const message = errorMessage(error);
+        console.error(`[sites] post-discover enrichment failed for ${id}:`, message);
+        await db
+          .update(sites)
+          .set({ lastError: message, updatedAt: new Date() })
+          .where(eq(sites.id, id));
+      }
+    })();
+    return c.json({
+      data: {
+        ...result,
+        enrichment: "scheduled",
+      },
+    });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = errorMessage(err);
     await db
       .update(sites)
       .set({ lastError: message, status: "error", updatedAt: new Date() })
       .where(eq(sites.id, id));
-    return c.json({ error: message }, 502);
+    return c.json({ error: { message } }, 502);
   }
 });
 
@@ -201,6 +247,18 @@ sitesRoute.post("/sites/:id/health", async (c) => {
   }
   return c.json({ data: { id, healthy: ok } });
 });
+
+function errorMessage(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+
+  const messages = new Set([error.message]);
+  let cause = error.cause;
+  while (cause instanceof Error && !messages.has(cause.message)) {
+    messages.add(cause.message);
+    cause = cause.cause;
+  }
+  return [...messages].join(": ");
+}
 
 function stripSecret<T extends { apiKeyEnc?: string; apiKeyIv?: string }>(row: T): Omit<T, "apiKeyEnc" | "apiKeyIv"> {
   const { apiKeyEnc: _e, apiKeyIv: _v, ...rest } = row;

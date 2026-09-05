@@ -175,6 +175,7 @@ export const seedanceAdapter: Adapter = {
           Authorization: `Bearer ${ctx.apiKey}`,
         },
         body: JSON.stringify(req),
+        signal: AbortSignal.timeout(30_000),
       });
       if (!response.ok) throw await toError(response, "video.submit");
       const data = (await response.json()) as { id?: string; status?: string };
@@ -195,6 +196,7 @@ export const seedanceAdapter: Adapter = {
         Authorization: `Bearer ${ctx.apiKey}`,
       },
       body: JSON.stringify(req),
+      signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) throw await toError(response, "video.submit");
     const data = (await response.json()) as { id?: string; task_id?: string; status?: string };
@@ -214,6 +216,7 @@ export const seedanceAdapter: Adapter = {
       const url = `${cfg.vendor.baseUrl}${queryPath.replace("{id}", encodeURIComponent(siteTaskId))}`;
       const response = await fetch(url, {
         headers: { Authorization: `Bearer ${ctx.apiKey}` },
+        signal: AbortSignal.timeout(30_000),
       });
       if (!response.ok) throw await toError(response, "video.query");
       const data = (await response.json()) as Record<string, unknown>;
@@ -230,6 +233,7 @@ export const seedanceAdapter: Adapter = {
     const url = `${baseUrl(ctx.targetUrl)}/v1/${cfg.endpoint}/${cfg.taskPath}/${encodeURIComponent(siteTaskId)}`;
     const response = await fetch(url, {
       headers: { Authorization: `Bearer ${ctx.apiKey}` },
+      signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) throw await toError(response, "video.query");
     const data = (await response.json()) as Record<string, unknown>;

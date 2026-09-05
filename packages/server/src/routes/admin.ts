@@ -11,6 +11,7 @@ import audit from "./admin/audit";
 import variantGroups from "./admin/variant-groups";
 import users from "./admin/users";
 import probes from "./admin/probes";
+import memefastProtocols from "./admin/memefast-protocols";
 
 /**
  * 管理后台路由集合。
@@ -34,5 +35,6 @@ admin.route("/", audit);
 admin.route("/", variantGroups);
 admin.route("/", users);
 admin.route("/", probes);
+admin.route("/", memefastProtocols);
 
 export default admin;

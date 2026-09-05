@@ -23,7 +23,10 @@ async function main() {
   const app = new Hono();
 
   app.use("*", logger());
-  app.use("*", cors({ origin: "*", credentials: false }));
+  app.use("*", cors({
+    origin: process.env.OPENHUB_CORS_ORIGIN?.split(",").map(s => s.trim()) ?? ["http://localhost:5173", "http://localhost:5174"],
+    credentials: false,
+  }));
 
   app.get("/", (c) =>
     c.json({

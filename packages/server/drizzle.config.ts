@@ -12,6 +12,7 @@ export default defineConfig({
     "./src/db/schema/audit.ts",
     "./src/db/schema/users.ts",
     "./src/db/schema/variant_groups.ts",
+    "./src/db/schema/memefast-protocols.ts",
   ],
   out: "./drizzle",
   dialect: "sqlite",

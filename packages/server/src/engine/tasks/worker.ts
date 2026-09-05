@@ -114,7 +114,7 @@ export async function submitPendingTasks(): Promise<number> {
         logger.error(`[tasks] ${task.id} route resolve failed: ${message}`);
         continue;
       }
-      const { adapter, variant, model, site, apiKey } = route;
+      const { adapter, variant, model, site, apiKey, protocol } = route;
 
       if (!adapter.submitVideoTask) {
         await markTaskFailedLocal(task.id, "adapter does not support video.submit");
@@ -157,6 +157,22 @@ export async function submitPendingTasks(): Promise<number> {
         targetUrl: site.baseUrl,
         apiKey,
         config: variant.adapterConfig ? JSON.parse(variant.adapterConfig) : undefined,
+        protocol: protocol?.document
+          ? {
+              protocolId: protocol.document.protocolId,
+              version: protocol.document.version,
+              modality: protocol.document.modality ?? "unknown",
+              modelNames: protocol.document.modelNames,
+              operations: protocol.document.operations.filter(
+                (operation): operation is Record<string, unknown> =>
+                  Boolean(operation) && typeof operation === "object" && !Array.isArray(operation),
+              ),
+              requestContract: protocol.document.requestContract,
+              responseContract: protocol.document.responseContract,
+              parameterMapping: protocol.document.parameterMapping,
+              statusMapping: protocol.document.statusMapping,
+            }
+          : undefined,
       });
 
       // pending → processing（条件更新）
@@ -197,7 +213,7 @@ export async function pollOnce(): Promise<void> {
   for (const task of processing) {
     try {
       const route = await resolveRouteById(task.variantId);
-      const { adapter, variant, site, apiKey } = route;
+      const { adapter, variant, site, apiKey, protocol } = route;
 
       if (!adapter.queryVideoTask) {
         continue;
@@ -207,6 +223,22 @@ export async function pollOnce(): Promise<void> {
         targetUrl: site.baseUrl,
         apiKey,
         config: variant.adapterConfig ? JSON.parse(variant.adapterConfig) : undefined,
+        protocol: protocol?.document
+          ? {
+              protocolId: protocol.document.protocolId,
+              version: protocol.document.version,
+              modality: protocol.document.modality ?? "unknown",
+              modelNames: protocol.document.modelNames,
+              operations: protocol.document.operations.filter(
+                (operation): operation is Record<string, unknown> =>
+                  Boolean(operation) && typeof operation === "object" && !Array.isArray(operation),
+              ),
+              requestContract: protocol.document.requestContract,
+              responseContract: protocol.document.responseContract,
+              parameterMapping: protocol.document.parameterMapping,
+              statusMapping: protocol.document.statusMapping,
+            }
+          : undefined,
       });
 
       const raw = (result as { raw?: unknown }).raw;

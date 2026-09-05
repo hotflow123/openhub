@@ -5,6 +5,8 @@ import { keys } from "../db/schema/index";
 import { hashToken } from "../lib/token";
 import { checkRateLimit } from "./rate-limit";
 
+const DEFAULT_RATE_LIMIT = 60;
+
 declare module "hono" {
   interface ContextVariableMap {
     hubKey: {
@@ -76,11 +78,11 @@ export async function authMiddleware(c: Context, next: Next) {
     id: record.id,
     name: record.name,
     allowedVariantIds: record.allowedVariantIds ? JSON.parse(record.allowedVariantIds) : null,
-    rateLimit: null, // use_count 字段用于统计，限速策略在 rate-limit.ts 内统一处理
+    rateLimit: record.rateLimit ?? DEFAULT_RATE_LIMIT,
   });
 
-  // P0-2: 速率限制头（即便未启用也写入 -1 标记客户端）
-  const rl = checkRateLimit(record.id, null);
+  // P0-2: rate limiting
+  const rl = checkRateLimit(record.id, record.rateLimit ?? DEFAULT_RATE_LIMIT);
   c.header("X-RateLimit-Limit", String(rl.limit));
   c.header("X-RateLimit-Remaining", String(Math.max(0, rl.remaining)));
   if (!rl.ok) {

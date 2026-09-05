@@ -5,7 +5,7 @@
  */
 
 interface InferredCapability {
-  modality: "llm" | "image" | "audio" | "video" | "embedding";
+  modality: "llm" | "image" | "audio" | "video" | "embedding" | "unknown";
   inferredVendor?: string;
   inferredFamily?: string;
   inferredVersion?: string;
@@ -347,19 +347,10 @@ export async function inferModelCapability(modelId: string): Promise<InferredCap
     return ruleResult;
   }
 
-  // 2. 规则引擎无法识别，返回默认 LLM
-  console.warn(`[llm-infer] Cannot infer ${modelId}, defaulting to LLM`);
+  // 2. 规则引擎无法识别，保持未知
+  console.warn(`[llm-infer] Cannot infer ${modelId}, leaving modality unknown`);
   return {
-    modality: "llm",
-    inferredVendor: "Unknown",
-    inferredFamily: "unknown",
-    inferredVersion: "unknown",
-    confidence: 0.3,
-    llm: {
-      contextWindow: 4096,
-      supportsFunctionCalling: false,
-      supportsStreaming: true,
-      supportsVision: false,
-    },
+    modality: "unknown",
+    confidence: 0,
   };
 }

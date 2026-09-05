@@ -13,13 +13,6 @@ async function request<T>(
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
-      Authorization:
-        "Basic " +
-        btoa(
-          `${import.meta.env.VITE_ADMIN_USER ?? "admin"}:${
-            import.meta.env.VITE_ADMIN_PASS ?? "admin123"
-          }`,
-        ),
       ...(init?.headers ?? {}),
     },
     ...init,

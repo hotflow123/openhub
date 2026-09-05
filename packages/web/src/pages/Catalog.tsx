@@ -43,6 +43,7 @@ interface SchemaEntry {
   title: string;
   modality: string;
   falCategory: string | null;
+  source: string;
   falSource: string | null;
   pricing: string | null;
   apiDocs: string | null;
@@ -126,6 +127,8 @@ export default function CatalogPage() {
         `/admin/catalog/schema?q=${encodeURIComponent(schemaQ)}&limit=100`,
       ),
     enabled: activeTab === "fal",
+    staleTime: 0,
+    refetchOnMount: "always",
   });
 
   const sync = useMutation({
@@ -224,7 +227,7 @@ export default function CatalogPage() {
           fal.ai Schema
           <button
             className="btn btn-sm btn-outline"
-            style={{ marginLeft: 8, padding: "2px 8px" }}
+            style={{ marginLeft: 8, padding: "2px 8px", display: "inline-flex", alignItems: "center" }}
             disabled={syncSchema.isPending}
             onClick={(e) => {
               e.stopPropagation();
@@ -383,7 +386,7 @@ export default function CatalogPage() {
           <div className="toolbar">
             <input
               className="input search-input"
-              placeholder="搜索 fal.ai 模型（标题、endpointId）..."
+              placeholder="搜索模型百科（标题、endpointId、来源）..."
               value={schemaQ}
               onChange={(e) => setSchemaQ(e.target.value)}
             />
@@ -431,15 +434,7 @@ export default function CatalogPage() {
                       <small style={{ color: "#64748b" }}>{s.falCategory ?? "—"}</small>
                     </td>
                     <td>
-                      {s.falSource ? (
-                        <span
-                          className={`badge ${s.falSource === "queue" ? "badge-active" : "badge-neutral"}`}
-                        >
-                          {s.falSource}
-                        </span>
-                      ) : (
-                        "—"
-                      )}
+                      <span className="badge badge-neutral">{s.source}</span>
                     </td>
                     <td>
                       <span className="badge badge-neutral">{s.parametersCount}</span>
@@ -861,3 +856,4 @@ function safeJson(s: string | null): string {
     return s;
   }
 }
+

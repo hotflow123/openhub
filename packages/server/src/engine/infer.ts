@@ -184,7 +184,7 @@ export interface InferredCapability {
   inferredVendor?: string;
   inferredFamily?: string;
   inferredVersion?: string;
-  modality: "llm" | "video" | "image" | "audio";
+  modality: "llm" | "video" | "image" | "audio" | "embedding" | "unknown";
   confidence: number;
   // fal.ai schema 元数据快照
   falEndpointId?: string;
@@ -269,8 +269,6 @@ function inferByRules(rawName: string): InferredCapability | null {
       modality: "video",
       confidence: 0.9,
       video: {
-        maxDurationSec: 10,
-        supportedResolutions: ["720p", "1080p"],
         requiresAsync: true,
       },
     };
@@ -311,10 +309,7 @@ function inferByRules(rawName: string): InferredCapability | null {
       inferredFamily: family,
       modality: "image",
       confidence: 0.85,
-      image: {
-        supportedSizes: ["512x512", "1024x1024"],
-        supportsInpainting: false,
-      },
+      image: {},
     };
   }
 
@@ -333,10 +328,7 @@ function inferByRules(rawName: string): InferredCapability | null {
       inferredFamily: family,
       modality: "audio",
       confidence: 0.8,
-      audio: {
-        supportedFormats: ["mp3", "wav"],
-        maxDurationSec: 300,
-      },
+      audio: {},
     };
   }
 
@@ -380,17 +372,15 @@ function inferByRules(rawName: string): InferredCapability | null {
     version = match ? match[1] : "";
   }
 
+  if (vendor === "Unknown") return null;
+
   return {
     inferredVendor: vendor,
     inferredFamily: family,
     inferredVersion: version,
     modality: "llm",
     confidence: 0.7,
-    llm: {
-      contextWindow: 128000,
-      supportsVision: false,
-      supportsFunctionCalling: true,
-    },
+    llm: {},
   };
 }
 
@@ -426,18 +416,10 @@ export async function inferModelCapability(
     return ruleResult;
   }
 
-  // 3. Fallback：默认为 LLM
+  // 3. 无证据时保持未知，不能伪装成 LLM
   return {
-    inferredVendor: "Unknown",
-    inferredFamily: "",
-    inferredVersion: "",
-    modality: "llm",
-    confidence: 0.5,
-    llm: {
-      contextWindow: 128000,
-      supportsVision: false,
-      supportsFunctionCalling: false,
-    },
+    modality: "unknown",
+    confidence: 0,
   };
 }
 
@@ -469,6 +451,7 @@ async function getSchemaByEndpointId(endpointId: string): Promise<any | null> {
 function convertSchemaToCapability(schema: any): InferredCapability {
   const {
     falCategory,
+    modality: schemaModality,
     title,
     endpointId,
     falSource,
@@ -496,7 +479,14 @@ function convertSchemaToCapability(schema: any): InferredCapability {
   }
 
   // 2) 从 category 确定模态
-  let modality: "llm" | "video" | "image" | "audio" = "llm";
+  let modality: "llm" | "video" | "image" | "audio" | "embedding" | "unknown" =
+    schemaModality === "llm" ||
+    schemaModality === "video" ||
+    schemaModality === "image" ||
+    schemaModality === "audio" ||
+    schemaModality === "embedding"
+      ? schemaModality
+      : "unknown";
   let confidence = 0.95;
 
   if (
@@ -554,7 +544,7 @@ function convertSchemaToCapability(schema: any): InferredCapability {
 
     const supportedResolutions = Array.isArray(resolutionParam?.enum)
       ? (resolutionParam!.enum as Array<string | number>).map(String)
-      : ["720p", "1080p"];
+      : undefined;
 
     const aspectRatios = Array.isArray(aspectRatioParam?.enum)
       ? (aspectRatioParam!.enum as Array<string | number>).map(String)
@@ -582,7 +572,7 @@ function convertSchemaToCapability(schema: any): InferredCapability {
 
     const supportedSizes = Array.isArray(sizeParam?.enum)
       ? (sizeParam!.enum as Array<string | number>).map(String)
-      : ["512x512", "1024x1024"];
+      : undefined;
 
     const supportsInpainting = parameters.some(
       (p) => p.name === "mask_url" || p.name === "inpaint",
@@ -599,7 +589,7 @@ function convertSchemaToCapability(schema: any): InferredCapability {
     const formatParam = parameters.find((p) => p.name === "format");
     const supportedFormats = Array.isArray(formatParam?.enum)
       ? (formatParam!.enum as Array<string | number>).map(String)
-      : ["mp3", "wav"];
+      : undefined;
 
     result.audio = {
       supportedFormats,

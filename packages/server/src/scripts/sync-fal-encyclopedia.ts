@@ -13,6 +13,7 @@ import { eq, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { db } from "../db/index.js";
 import {
@@ -315,6 +316,8 @@ export async function syncFalEncyclopedia(options: {
 }
 
 // CLI 入口
-void syncFalEncyclopedia().then((r) => {
-  if (r.status !== "success") process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void syncFalEncyclopedia().then((r) => {
+    if (r.status !== "success") process.exit(1);
+  });
+}

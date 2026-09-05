@@ -64,6 +64,7 @@ export const openaiAdapter: Adapter = {
         Authorization: `Bearer ${ctx.apiKey}`,
       },
       body: JSON.stringify({ ...req, stream: false }),
+      signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
       throw await toAdapterError(response, "chat");
@@ -99,6 +100,7 @@ export const openaiAdapter: Adapter = {
         Authorization: `Bearer ${ctx.apiKey}`,
       },
       body: JSON.stringify(req),
+      signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
       throw await toAdapterError(response, "embedding");
@@ -133,6 +135,7 @@ export const openaiAdapter: Adapter = {
         Authorization: `Bearer ${ctx.apiKey}`,
       },
       body: JSON.stringify(req),
+      signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
       throw await toAdapterError(response, "image.generation");
@@ -152,6 +155,7 @@ export const openaiAdapter: Adapter = {
       method: "POST",
       headers: { Authorization: `Bearer ${ctx.apiKey}` },
       body: form,
+      signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
       throw await toAdapterError(response, "image.edit");
@@ -171,6 +175,7 @@ export const openaiAdapter: Adapter = {
       method: "POST",
       headers: { Authorization: `Bearer ${ctx.apiKey}` },
       body: form,
+      signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
       throw await toAdapterError(response, "image.variation");
@@ -192,6 +197,7 @@ export const openaiAdapter: Adapter = {
         Authorization: `Bearer ${ctx.apiKey}`,
       },
       body: JSON.stringify(req),
+      signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
       throw await toAdapterError(response, "audio.speech");
@@ -211,6 +217,7 @@ export const openaiAdapter: Adapter = {
       method: "POST",
       headers: { Authorization: `Bearer ${ctx.apiKey}` },
       body: form,
+      signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
       throw await toAdapterError(response, "audio.transcription");
@@ -244,6 +251,7 @@ export const openaiAdapter: Adapter = {
         Authorization: `Bearer ${ctx.apiKey}`,
       },
       body: JSON.stringify(req),
+      signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
       throw await toAdapterError(response, "video.submit");
@@ -272,6 +280,7 @@ export const openaiAdapter: Adapter = {
     const url = `${baseUrl(ctx.targetUrl)}/v1/${endpoint}/${encodeURIComponent(siteTaskId)}`;
     const response = await fetch(url, {
       headers: { Authorization: `Bearer ${ctx.apiKey}` },
+      signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
       throw await toAdapterError(response, "video.query");

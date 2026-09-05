@@ -187,6 +187,28 @@ export interface ForwardContext {
   apiKey: string;
   /** 适配器特定覆盖配置 */
   config?: Record<string, unknown>;
+  /** 已确认的站点协议；协议驱动适配器不得猜测缺失操作。 */
+  protocol?: ProtocolRuntime;
+}
+
+export interface ProtocolOperation {
+  method?: string;
+  path?: string;
+  summary?: string;
+  operationId?: string;
+  [key: string]: unknown;
+}
+
+export interface ProtocolRuntime {
+  protocolId: string;
+  version: string;
+  modality: string;
+  modelNames?: string[];
+  operations: ProtocolOperation[];
+  requestContract?: unknown;
+  responseContract?: unknown;
+  parameterMapping?: unknown;
+  statusMapping?: unknown;
 }
 
 export interface Adapter {

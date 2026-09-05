@@ -27,10 +27,12 @@ export const models = sqliteTable(
 
     // 适配器
     adapterId: text("adapter_id").notNull().default("openai-compatible"),
+    // 上游 /v1/models 原始元数据（model_type、supported_endpoint_types 等）
+    sourceMetadata: text("source_metadata"),
 
     // 模态与能力
     modality: text("modality", {
-      enum: ["llm", "image", "audio", "video", "embedding"],
+      enum: ["llm", "image", "audio", "video", "embedding", "unknown"],
     }).notNull(),
     endpointCaps: text("endpoint_caps").notNull().default("[]"),
     paramCaps: text("param_caps").notNull().default("[]"),

@@ -2,6 +2,7 @@ import { db } from "../db/index.js";
 import { models, sites } from "../db/schema/index.js";
 import { eq, desc } from "drizzle-orm";
 import { discoverModels } from "../engine/discover.js";
+import { decrypt, getMasterKey } from "../lib/crypto.js";
 
 async function main() {
   console.log("=== Testing Model Discovery Flow ===\n");
@@ -37,15 +38,16 @@ async function main() {
   // 3. 运行发现流程
   console.log("\n🔍 Running discovery...");
   
-  if (!testSite.baseUrl || !testSite.apiKey) {
-    console.log("❌ Site missing baseUrl or apiKey");
+  if (!testSite.baseUrl || !testSite.apiKeyEnc || !testSite.apiKeyIv) {
+    console.log("❌ Site missing baseUrl or encrypted apiKey");
     return;
   }
+  const apiKey = await decrypt(testSite.apiKeyEnc, testSite.apiKeyIv, getMasterKey());
   
   const startTime = Date.now();
   
   try {
-    const result = await discoverModels(testSite.id!, testSite.baseUrl, testSite.apiKey);
+    const result = await discoverModels(testSite.id, testSite.baseUrl, apiKey);
     const elapsed = Date.now() - startTime;
     
     console.log(`✅ Discovery completed in ${elapsed}ms`);
@@ -58,7 +60,7 @@ async function main() {
     const newModels = await db
       .select({
         id: models.id,
-        remoteId: models.remoteId,
+        rawName: models.rawName,
         modality: models.modality,
         vendor: models.vendor,
         family: models.family,
@@ -75,7 +77,7 @@ async function main() {
     for (const m of newModels) {
       console.log({
         id: m.id,
-        remoteId: m.remoteId,
+        rawName: m.rawName,
         modality: m.modality,
         vendor: m.vendor,
         family: m.family,
@@ -104,14 +106,14 @@ async function main() {
 
     // 6. 检查 Seedance 模型
     const seedanceModels = newModels.filter((m) =>
-      m.remoteId?.toLowerCase().includes("seedance")
+      m.rawName.toLowerCase().includes("seedance")
     );
     
     if (seedanceModels.length > 0) {
       console.log("\n=== Seedance Models ===");
       for (const m of seedanceModels) {
         console.log({
-          remoteId: m.remoteId,
+          rawName: m.rawName,
           schemaEndpointId: m.schemaEndpointId,
           matchSource: m.schemaMatchSource,
         });
